@@ -1,5 +1,5 @@
 """
-Copyright © Krypton 2019-Present - https://github.com/kkrypt0nn (https://krypton.ninja)
+Copyright © Krypton 2019-Present - https://github.com/kkrypt0nn
 Description:
 🐍 A simple template to start to code your own and personalized Discord bot in Python
 
@@ -32,7 +32,6 @@ Setup bot intents (events restrictions)
 For more information about intents, please go to the following websites:
 https://discordpy.readthedocs.io/en/latest/intents.html
 https://discordpy.readthedocs.io/en/latest/intents.html#privileged-intents
-
 
 Default Intents:
 intents.bans = True
@@ -142,7 +141,7 @@ class DiscordBot(commands.Bot):
         """
         self.logger = logger
         self.config = config
-        self.database = None
+        self.database = None  # Will be initialized later
 
     async def init_db(self) -> None:
         async with aiosqlite.connect(
@@ -187,7 +186,7 @@ class DiscordBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         """
-        This will just be executed when the bot starts the first time.
+        This will be executed when the bot starts for the first time.
         """
         self.logger.info(f"Logged in as {self.user.name}")
         self.logger.info(f"discord.py API version: {discord.__version__}")
@@ -197,13 +196,14 @@ class DiscordBot(commands.Bot):
         )
         self.logger.info("-------------------")
         await self.init_db()
-        await self.load_cogs()
-        self.status_task.start()
+        # Initialize the database manager before loading cogs
         self.database = DatabaseManager(
             connection=await aiosqlite.connect(
                 f"{os.path.realpath(os.path.dirname(__file__))}/database/database.db"
             )
         )
+        await self.load_cogs()
+        self.status_task.start()
 
     async def on_message(self, message: discord.Message) -> None:
         """
@@ -256,11 +256,11 @@ class DiscordBot(commands.Bot):
             await context.send(embed=embed)
             if context.guild:
                 self.logger.warning(
-                    f"{context.author} (ID: {context.author.id}) tried to execute an owner only command in the guild {context.guild.name} (ID: {context.guild.id}), but the user is not an owner of the bot."
+                    f"{context.author} (ID: {context.author.id}) tried to execute an owner-only command in the guild {context.guild.name} (ID: {context.guild.id}), but the user is not an owner of the bot."
                 )
             else:
                 self.logger.warning(
-                    f"{context.author} (ID: {context.author.id}) tried to execute an owner only command in the bot's DMs, but the user is not an owner of the bot."
+                    f"{context.author} (ID: {context.author.id}) tried to execute an owner-only command in the bot's DMs, but the user is not an owner of the bot."
                 )
         elif isinstance(error, commands.MissingPermissions):
             embed = discord.Embed(
