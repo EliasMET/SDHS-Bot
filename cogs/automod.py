@@ -6,7 +6,7 @@ import re
 import logging
 from datetime import datetime, timedelta
 import math
-import aiohttp  # For fetching the profanity list
+import aiohttp  # For fetching the profanity lise
 
 # Logger setup
 logger = logging.getLogger("AutoMod")
