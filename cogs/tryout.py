@@ -21,6 +21,8 @@ class GroupDropdown(discord.ui.Select):
         self.bot = bot
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)  # Defer the interaction
+
         selected_group_id = self.values[0]
         group_info = self.group_settings[selected_group_id]
 
@@ -57,14 +59,14 @@ class GroupDropdown(discord.ui.Select):
                 description=f"The tryout announcement for **{group_info['event']}** has been sent successfully!",
                 color=0x00FF00,
             )
-            await interaction.response.edit_message(embed=confirmation_embed, view=None)
+            await interaction.followup.edit_message(message_id=interaction.message.id, embed=confirmation_embed, view=None)
         else:
             error_embed = discord.Embed(
                 title="Error",
                 description="Unable to find the specified channel.",
                 color=0xFF0000,
             )
-            await interaction.response.edit_message(embed=error_embed, view=None)
+            await interaction.followup.edit_message(message_id=interaction.message.id, embed=error_embed, view=None)
 
 
 class DropdownView(discord.ui.View):
@@ -139,6 +141,8 @@ class Tryout(commands.Cog, name="tryout"):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
+        await interaction.response.defer(ephemeral=True)  # Defer the interaction and make it ephemeral
+
         async with aiohttp.ClientSession() as session:
             try:
                 # Fetch Roblox User ID from Bloxlink
@@ -155,7 +159,7 @@ class Tryout(commands.Cog, name="tryout"):
                         description="Failed to fetch Roblox User ID. Ensure Bloxlink is configured correctly.",
                         color=0xFF0000,
                     )
-                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    await interaction.followup.send(embed=embed, ephemeral=True)
                     return
 
                 roblox_user_id = bloxlink_data["robloxID"]
@@ -171,7 +175,7 @@ class Tryout(commands.Cog, name="tryout"):
                         description="You are not in any Roblox groups.",
                         color=0xFF0000,
                     )
-                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    await interaction.followup.send(embed=embed, ephemeral=True)
                     return
 
                 # Collect all matching groups
@@ -187,7 +191,7 @@ class Tryout(commands.Cog, name="tryout"):
                         description="No matching group found for this command.",
                         color=0xFF0000,
                     )
-                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    await interaction.followup.send(embed=embed, ephemeral=True)
                     return
 
                 # If multiple groups, show a dropdown for selection
@@ -197,7 +201,7 @@ class Tryout(commands.Cog, name="tryout"):
                     color=0x00FF00,
                 )
                 view = DropdownView(matching_groups, interaction.user, cohost, lock_time, self.group_settings, channel_id, self.bot)
-                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
             except Exception as e:
                 error_embed = discord.Embed(
@@ -205,7 +209,7 @@ class Tryout(commands.Cog, name="tryout"):
                     description=f"An unexpected error occurred: {str(e)}",
                     color=0xFF0000,
                 )
-                await interaction.response.send_message(embed=error_embed, ephemeral=True)
+                await interaction.followup.send(embed=error_embed, ephemeral=True)
 
 
 # Setup the cog
