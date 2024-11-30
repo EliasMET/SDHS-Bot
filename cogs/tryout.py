@@ -159,7 +159,7 @@ class Tryout(commands.Cog, name="tryout"):
         cohost: discord.Member = None,
         lock_time: int = 10,
     ) -> None:
-        bloxlink_api_key = "81394bf8-2e12-427b-846e-8e79c142996e"  # Replace with your actual Bloxlink API key
+        bloxlink_api_key = "8cbcf282-fff9-4c34-b13b-b3e0a85aebe3"  # Replace with your actual Bloxlink API key
         guild_id = interaction.guild.id  # Get the server's guild ID
 
         # Fetch required roles from the database

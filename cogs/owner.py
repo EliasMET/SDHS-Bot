@@ -18,13 +18,13 @@ class Owner(commands.Cog, name="owner"):
 
     @commands.command(
         name="sync",
-        description="Synchonizes the slash commands.",
+        description="Synchronizes the slash commands.",
     )
     @app_commands.describe(scope="The scope of the sync. Can be `global` or `guild`")
     @commands.is_owner()
     async def sync(self, context: Context, scope: str) -> None:
         """
-        Synchonizes the slash commands.
+        Synchronizes the slash commands.
 
         :param context: The command context.
         :param scope: The scope of the sync. Can be `global` or `guild`.
@@ -54,7 +54,7 @@ class Owner(commands.Cog, name="owner"):
 
     @commands.command(
         name="unsync",
-        description="Unsynchonizes the slash commands.",
+        description="Unsynchronizes the slash commands.",
     )
     @app_commands.describe(
         scope="The scope of the sync. Can be `global`, `current_guild` or `guild`"
@@ -62,7 +62,7 @@ class Owner(commands.Cog, name="owner"):
     @commands.is_owner()
     async def unsync(self, context: Context, scope: str) -> None:
         """
-        Unsynchonizes the slash commands.
+        Unsynchronizes the slash commands.
 
         :param context: The command context.
         :param scope: The scope of the sync. Can be `global`, `current_guild` or `guild`.
@@ -106,14 +106,16 @@ class Owner(commands.Cog, name="owner"):
         """
         try:
             await self.bot.load_extension(f"cogs.{cog}")
-        except Exception:
+        except Exception as e:
             embed = discord.Embed(
-                description=f"Could not load the `{cog}` cog.", color=0xE02B2B
+                description=f"Could not load the `{cog}` cog.\nError: {e}",
+                color=0xE02B2B,
             )
             await context.send(embed=embed)
             return
         embed = discord.Embed(
-            description=f"Successfully loaded the `{cog}` cog.", color=0xBEBEFE
+            description=f"Successfully loaded the `{cog}` cog.",
+            color=0xBEBEFE,
         )
         await context.send(embed=embed)
 
@@ -132,14 +134,16 @@ class Owner(commands.Cog, name="owner"):
         """
         try:
             await self.bot.unload_extension(f"cogs.{cog}")
-        except Exception:
+        except Exception as e:
             embed = discord.Embed(
-                description=f"Could not unload the `{cog}` cog.", color=0xE02B2B
+                description=f"Could not unload the `{cog}` cog.\nError: {e}",
+                color=0xE02B2B,
             )
             await context.send(embed=embed)
             return
         embed = discord.Embed(
-            description=f"Successfully unloaded the `{cog}` cog.", color=0xBEBEFE
+            description=f"Successfully unloaded the `{cog}` cog.",
+            color=0xBEBEFE,
         )
         await context.send(embed=embed)
 
@@ -158,14 +162,16 @@ class Owner(commands.Cog, name="owner"):
         """
         try:
             await self.bot.reload_extension(f"cogs.{cog}")
-        except Exception:
+        except Exception as e:
             embed = discord.Embed(
-                description=f"Could not reload the `{cog}` cog.", color=0xE02B2B
+                description=f"Could not reload the `{cog}` cog.\nError: {e}",
+                color=0xE02B2B,
             )
             await context.send(embed=embed)
             return
         embed = discord.Embed(
-            description=f"Successfully reloaded the `{cog}` cog.", color=0xBEBEFE
+            description=f"Successfully reloaded the `{cog}` cog.",
+            color=0xBEBEFE,
         )
         await context.send(embed=embed)
 
@@ -198,22 +204,6 @@ class Owner(commands.Cog, name="owner"):
         :param message: The message that should be repeated by the bot.
         """
         await context.send(message)
-
-    @commands.hybrid_command(
-        name="embed",
-        description="The bot will say anything you want, but within embeds.",
-    )
-    @app_commands.describe(message="The message that should be repeated by the bot")
-    @commands.is_owner()
-    async def embed(self, context: Context, *, message: str) -> None:
-        """
-        The bot will say anything you want, but using embeds.
-
-        :param context: The hybrid command context.
-        :param message: The message that should be repeated by the bot.
-        """
-        embed = discord.Embed(description=message, color=0xBEBEFE)
-        await context.send(embed=embed)
 
 
 async def setup(bot) -> None:

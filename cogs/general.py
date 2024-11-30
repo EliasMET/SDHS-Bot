@@ -1,4 +1,13 @@
+"""
+Copyright © Krypton 2019-Present - https://github.com/kkrypt0nn (https://krypton.ninja)
+Description:
+🐍 A simple template to start to code your own and personalized Discord bot in Python
+
+Version: 6.2.0
+"""
+
 import platform
+import re
 
 import discord
 from discord import app_commands
@@ -19,6 +28,99 @@ class FeedbackForm(discord.ui.Modal, title="Feedback"):
         self.interaction = interaction
         self.answer = str(self.feedback)
         self.stop()
+
+
+class CreateEmbedModal(discord.ui.Modal, title="Create an Embed"):
+    embed_title = discord.ui.TextInput(
+        label="Embed Title",
+        style=discord.TextStyle.short,
+        placeholder="Enter the title for the embed...",
+        required=False,
+        max_length=256,
+    )
+    embed_description = discord.ui.TextInput(
+        label="Embed Description",
+        style=discord.TextStyle.long,
+        placeholder="Enter the description for the embed...",
+        required=True,
+        max_length=2048,
+    )
+    embed_color = discord.ui.TextInput(
+        label="Embed Color (Hex)",
+        style=discord.TextStyle.short,
+        placeholder="#FFFFFF",
+        required=False,
+        max_length=7,
+    )
+
+    def __init__(self, channel: discord.TextChannel):
+        super().__init__()
+        self.channel = channel
+
+    def resolve_emojis(self, text: str) -> str:
+        """
+        Resolves custom emoji shortcodes in the format :emoji_name: to actual emojis.
+
+        :param text: The text to process.
+        :return: The text with resolved emojis.
+        """
+        pattern = r':(\w+):'
+        emojis = self.channel.guild.emojis
+        emoji_dict = {emoji.name: str(emoji) for emoji in emojis}
+
+        def replace(match):
+            name = match.group(1)
+            return emoji_dict.get(name, match.group(0))  # If not found, keep as is
+
+        return re.sub(pattern, replace, text)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        title = self.embed_title.value.strip() or None
+        description = self.embed_description.value.strip()
+        color_input = self.embed_color.value.strip()
+
+        # Resolve emojis in the description
+        description = self.resolve_emojis(description)
+
+        # Resolve emojis in the title if provided
+        if title:
+            title = self.resolve_emojis(title)
+
+        # Validate and convert color
+        color = 0xBEBEFE  # Default color
+        if color_input:
+            try:
+                if color_input.startswith("#"):
+                    color = int(color_input[1:], 16)
+                else:
+                    color = int(color_input, 16)
+            except ValueError:
+                await interaction.response.send_message(
+                    "❌ Invalid color format. Please provide a valid hex color code.",
+                    ephemeral=True
+                )
+                return
+
+        embed = discord.Embed(description=description, color=color)
+        if title:
+            embed.title = title
+
+        try:
+            await self.channel.send(embed=embed)
+            await interaction.response.send_message(
+                f"✅ Embed successfully sent to {self.channel.mention}.",
+                ephemeral=True
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                f"❌ I don't have permission to send messages in {self.channel.mention}.",
+                ephemeral=True
+            )
+        except discord.HTTPException as e:
+            await interaction.response.send_message(
+                f"❌ Failed to send embed: {e}",
+                ephemeral=True
+            )
 
 
 class General(commands.Cog, name="general"):
@@ -117,7 +219,7 @@ class General(commands.Cog, name="general"):
                 included_commands.add(app_command.name)
         # Now build the embed
         for cog_name, commands_list in cog_commands.items():
-            if cog_name == "owner" and not (await self.bot.is_owner(context.author)):
+            if cog_name.lower() == "owner" and not (await self.bot.is_owner(context.author)):
                 continue
             if commands_list:
                 help_text = "\n".join(commands_list)
@@ -233,6 +335,45 @@ class General(commands.Cog, name="general"):
                 color=0xBEBEFE,
             )
         )
+
+    @app_commands.command(
+        name="embed", description="Create an embed in a specified channel."
+    )
+    @app_commands.describe(channel="The channel where the embed will be sent.")
+    async def embed_command(
+        self, interaction: discord.Interaction, channel: discord.TextChannel
+    ) -> None:
+        """
+        Creates an embed in the specified channel after receiving text input.
+
+        :param interaction: The command interaction.
+        :param channel: The channel to send the embed to.
+        """
+        # Check if the bot has permission to send messages in the specified channel
+        if not channel.permissions_for(interaction.guild.me).send_messages:
+            await interaction.response.send_message(
+                f"❌ I don't have permission to send messages in {channel.mention}.",
+                ephemeral=True
+            )
+            return
+
+        # Instantiate and send the modal
+        embed_modal = CreateEmbedModal(channel)
+        await interaction.response.send_modal(embed_modal)
+
+    # Ensure the new command is registered with the bot
+    @embed_command.error
+    async def embed_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ):
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "❌ You don't have permission to use this command.", ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                "❌ An error occurred while processing the command.", ephemeral=True
+            )
 
 
 async def setup(bot) -> None:

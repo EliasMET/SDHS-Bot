@@ -9,14 +9,7 @@ import math
 import aiohttp
 import asyncio
 
-# Logger setup
-logger = logging.getLogger("AutoMod")
-logger.setLevel(logging.DEBUG)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s"))
-logger.addHandler(handler)
-
-# Define the check function outside the class
+# Define the check function outside the class for command permissions
 async def is_admin_or_owner(interaction: discord.Interaction) -> bool:
     # Access bot via interaction.client
     bot = interaction.client
@@ -113,6 +106,15 @@ class AutoMod(commands.Cog):
         if not self.db:
             raise ValueError("DatabaseManager is not initialized in the bot.")
 
+        # Ensure owner_id is cached
+        if not hasattr(self.bot, 'owner_id'):
+            app_info = await self.bot.application_info()
+            self.bot.owner_id = app_info.owner.id
+
+    def cog_unload(self):
+        self.expire_warnings_task.cancel()
+        self.load_profanity_list_task.cancel()
+
     async def handle_message_violation(self, message: discord.Message, reason: str):
         try:
             # Delete the violating message instantly
@@ -174,11 +176,15 @@ class AutoMod(commands.Cog):
                         log_embed.set_footer(text=f"User ID: {message.author.id}")
                         await log_channel.send(embed=log_embed)
         except Exception as e:
-            logger.error(f"Failed to handle message violation: {e}")
+            self.bot.logger.error(f"Failed to handle message violation: {e}")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
+            return
+
+        # Bypass AutoMod if the user is an admin or the bot owner
+        if await self.is_bypass(message):
             return
 
         # Check if automod is enabled for this server
@@ -195,6 +201,28 @@ class AutoMod(commands.Cog):
         elif self.profanity_pattern and self.profanity_pattern.search(content):
             await self.handle_message_violation(message, "Using prohibited language.")
 
+    async def is_bypass(self, message: discord.Message) -> bool:
+        """
+        Checks if the user is the bot owner or has administrator permissions.
+
+        :param message: The message to check.
+        :return: True if the user should bypass automod, False otherwise.
+        """
+        # Ensure owner_id is cached
+        if not hasattr(self.bot, 'owner_id'):
+            try:
+                app_info = await self.bot.application_info()
+                self.bot.owner_id = app_info.owner.id
+            except Exception as e:
+                self.bot.logger.error(f"Failed to fetch application info: {e}")
+                return False  # Default to not bypass
+
+        if message.author.id == self.bot.owner_id:
+            return True
+        if message.author.guild_permissions.administrator:
+            return True
+        return False
+
     @tasks.loop(minutes=5)
     async def expire_warnings_task(self):
         """Task to expire warnings older than 1 hour."""
@@ -202,9 +230,10 @@ class AutoMod(commands.Cog):
             expiration_timestamp = int((datetime.now() - timedelta(hours=1)).timestamp())
             # Remove expired warnings directly
             await self.db.remove_expired_warnings(expiration_timestamp)
-            logger.info(f"Expired warnings older than {expiration_timestamp}.")
+            # Removed the log line that was printing to the console
+            # self.bot.logger.info(f"Expired warnings older than {expiration_timestamp}.")
         except Exception as e:
-            logger.error(f"Error in warning expiration task: {e}")
+            self.bot.logger.error(f"Error in warning expiration task: {e}")
 
     @tasks.loop(count=1)
     async def load_profanity_list_task(self):
@@ -220,11 +249,11 @@ class AutoMod(commands.Cog):
                         escaped_words = [re.escape(word) for word in self.profanity_list]
                         pattern = r'\b(' + '|'.join(escaped_words) + r')\b'
                         self.profanity_pattern = re.compile(pattern, re.IGNORECASE)
-                        logger.info("Profanity list loaded and regex compiled successfully.")
+                        self.bot.logger.info("Profanity list loaded and regex compiled successfully.")
                     else:
-                        logger.error(f"Failed to load profanity list: HTTP {response.status}")
+                        self.bot.logger.error(f"Failed to load profanity list: HTTP {response.status}")
         except Exception as e:
-            logger.error(f"Error loading profanity list: {e}")
+            self.bot.logger.error(f"Error loading profanity list: {e}")
 
     @app_commands.command(name="warns", description="View all warnings for a user.")
     @app_commands.describe(user="The user to view warnings for.")
@@ -316,7 +345,7 @@ class AutoMod(commands.Cog):
             else:
                 await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
-            logger.error(f"Error in /warns command: {error}")
+            self.bot.logger.error(f"Error in /warns command: {error}")
             raise error
 
     @clearwarnings.error
@@ -332,7 +361,7 @@ class AutoMod(commands.Cog):
             else:
                 await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
-            logger.error(f"Error in /clearwarnings command: {error}")
+            self.bot.logger.error(f"Error in /clearwarnings command: {error}")
             raise error
 
     @clearwarn.error
@@ -348,10 +377,8 @@ class AutoMod(commands.Cog):
             else:
                 await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
-            logger.error(f"Error in /clearwarn command: {error}")
+            self.bot.logger.error(f"Error in /clearwarn command: {error}")
             raise error
-
-    # No need for settings command or its error handler here, as it's now in settings_cog.py
 
 # Setup function
 async def setup(bot):
