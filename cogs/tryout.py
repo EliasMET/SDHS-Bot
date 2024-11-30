@@ -2,45 +2,82 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
-from datetime import datetime, timedelta
+from datetime import timedelta
+import logging
 
+# Logger setup
+logger = logging.getLogger("TryoutCog")
+logger.setLevel(logging.DEBUG)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s"))
+logger.addHandler(handler)
 
-class GroupDropdown(discord.ui.Select):
-    def __init__(self, groups, user, cohost, lock_time, group_settings, channel_id, bot):
-        options = [
-            discord.SelectOption(label=group['event'], description=group['description'][:50], value=str(group_id))
-            for group_id, group in groups.items()
-        ]
-        super().__init__(placeholder="Select a group for the tryout", options=options)
-        self.groups = groups
+class PaginatedDropdownView(discord.ui.View):
+    def __init__(self, groups, user, cohost, lock_time, group_settings, channel_id, bot, per_page=25):
+        super().__init__(timeout=180)  # Set a timeout for the view
+        self.groups = list(groups.items())
         self.user = user
         self.cohost = cohost
         self.lock_time = lock_time
         self.group_settings = group_settings
         self.channel_id = channel_id
         self.bot = bot
+        self.per_page = per_page
+        self.current_page = 0
+        self.total_pages = (len(self.groups) - 1) // per_page + 1
 
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)  # Defer the interaction
+        # Initialize Select menu
+        self.select = discord.ui.Select(
+            placeholder="Select a group for the tryout",
+            min_values=1,
+            max_values=1,
+            options=self.get_options()
+        )
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
 
-        selected_group_id = self.values[0]
+        # Add navigation buttons if necessary
+        if self.total_pages > 1:
+            self.prev_button = discord.ui.Button(label="Previous", style=discord.ButtonStyle.primary)
+            self.next_button = discord.ui.Button(label="Next", style=discord.ButtonStyle.primary)
+            self.prev_button.callback = self.prev_page
+            self.next_button.callback = self.next_page
+            self.add_item(self.prev_button)
+            self.add_item(self.next_button)
+
+    def get_options(self):
+        start = self.current_page * self.per_page
+        end = start + self.per_page
+        return [
+            discord.SelectOption(
+                label=group['event_name'],
+                description=group['description'][:50],
+                value=str(group_id)
+            )
+            for group_id, group in self.groups[start:end]
+        ]
+
+    async def select_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        selected_group_id = self.select.values[0]
         group_info = self.group_settings[selected_group_id]
 
-        # Calculate lock time as Unix timestamp
-        lock_timestamp = datetime.now() + timedelta(minutes=self.lock_time)
-        lock_unix = int(lock_timestamp.timestamp())
+        # Calculate lock time as Unix timestamp using discord.utils.utcnow()
+        lock_timestamp = discord.utils.utcnow() + timedelta(minutes=self.lock_time)
+        lock_unix = int(lock_timestamp.replace(tzinfo=discord.utils.utcnow().tzinfo).timestamp())
         lock_time_formatted = f"<t:{lock_unix}:R>"
 
         cohost_mention = self.cohost.mention if self.cohost else "N/A"
 
         # Build the plain text message for the tryout announcement
         tryout_message = (
-            f"**[HOST]** {self.user.mention}\n\n"
-            f"**[CO-HOST]** {cohost_mention}\n\n"
-            f"**[EVENT]** {group_info['event']}\n\n"
-            f"**[DESCRIPTION]** {group_info['description']}\n\n"
-            f"**[LINK]** {group_info['link']}\n\n"
-            f"**[LOCKS]** {lock_time_formatted}\n\n"
+            f"**[HOST]** {self.user.mention}\n"
+            f"**[CO-HOST]** {cohost_mention}\n"
+            f"**[EVENT]** {group_info['event_name']}\n"
+            f"**[DESCRIPTION]** {group_info['description']}\n"
+            f"**[LINK]** {group_info['link']}\n"
+            f"**[LOCKS]** {lock_time_formatted}\n"
             f"**[REQUIREMENTS]**\n\n"
             f"• Account age of 100+ Days\n\n"
             f"• No Safechat\n\n"
@@ -56,7 +93,7 @@ class GroupDropdown(discord.ui.Select):
             await channel.send(tryout_message)
             confirmation_embed = discord.Embed(
                 title="Success",
-                description=f"The tryout announcement for **{group_info['event']}** has been sent successfully!",
+                description=f"The tryout announcement for **{group_info['event_name']}** has been sent successfully!",
                 color=0x00FF00,
             )
             await interaction.followup.edit_message(message_id=interaction.message.id, embed=confirmation_embed, view=None)
@@ -68,49 +105,45 @@ class GroupDropdown(discord.ui.Select):
             )
             await interaction.followup.edit_message(message_id=interaction.message.id, embed=error_embed, view=None)
 
+    async def prev_page(self, interaction: discord.Interaction):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.select.options = self.get_options()
+            await interaction.response.edit_message(view=self)
 
-class DropdownView(discord.ui.View):
-    def __init__(self, groups, user, cohost, lock_time, group_settings, channel_id, bot):
-        super().__init__()
-        self.add_item(GroupDropdown(groups, user, cohost, lock_time, group_settings, channel_id, bot))
-
+    async def next_page(self, interaction: discord.Interaction):
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.select.options = self.get_options()
+            await interaction.response.edit_message(view=self)
 
 class Tryout(commands.Cog, name="tryout"):
     def __init__(self, bot) -> None:
         self.bot = bot
+        self.db = None
 
-        # Group-specific settings with customizable events
-        self.group_settings = {
-            "34995316": {
-                "description": "Ever wanted to be the HQ’s Guard or Protect the Academy? Participate in dangerous missions? Well now is your Chance! The Community Emergency Response Team are hosting a Tryout! Come to the Parade Deck to attend a Tryout Now!",
-                "link": "https://www.roblox.com/communities/34995316/SRT-Specialized-Response-Team#!/about",
-                "event": "CERT Tryout",
-            },
-            "35254283": {
-                "description": "Have you ever wanted to be the primary security for the government of the United States and Protect the American people and our borders? The Specialized Government Police are hosting a Tryout! Come to the Parade Deck to attend a Tryout Now!",
-                "link": "https://www.roblox.com/games/135570523432203/Homeland-Security-USA",
-                "event": "SGP Tryout",
-            },
-            "15662381": {
-                "description": "Test",
-                "link": "https://example.com",
-                "event": "Test Event",
-            },
-            "5249096": {
-                "description": "Test2",
-                "link": "https://example2.com",
-                "event": "Test Event2",
-            },
-        }
+    async def cog_load(self):
+        self.db = self.bot.database
+        if not self.db:
+            raise ValueError("DatabaseManager is not initialized in the bot.")
 
-        # Required roles for the command
-        self.required_roles = {
-            1311772951300804608,
-            1311772959622430822,
-            1311772956334100642,
-            1312145004679921784,
-            1310158383000850452,
-        }
+    async def fetch_all_roblox_groups(self, session, roblox_url):
+        all_groups = []
+        cursor = None
+        while True:
+            url = roblox_url
+            if cursor:
+                url += f"?cursor={cursor}"
+            async with session.get(url) as response:
+                if response.status != 200:
+                    logger.error(f"Roblox API returned status {response.status}")
+                    break
+                data = await response.json()
+                all_groups.extend(data.get("data", []))
+                cursor = data.get("nextPageCursor")
+                if not cursor:
+                    break
+        return all_groups
 
     @app_commands.command(
         name="tryout",
@@ -126,13 +159,23 @@ class Tryout(commands.Cog, name="tryout"):
         cohost: discord.Member = None,
         lock_time: int = 10,
     ) -> None:
-        bloxlink_api_key = "0c2608bb-be45-480d-9a4e-7b34f2fa3b85"  # Replace with your actual Bloxlink API key
-        guild_id = 1287288514186182686  # Replace with your guild ID
-        channel_id = 1288192250572177449  # Replace with your desired channel ID
+        bloxlink_api_key = "81394bf8-2e12-427b-846e-8e79c142996e"  # Replace with your actual Bloxlink API key
+        guild_id = interaction.guild.id  # Get the server's guild ID
 
-        # Check if the user has the required roles
+        # Fetch required roles from the database
+        required_roles = await self.db.get_tryout_required_roles(interaction.guild.id)
+        if not required_roles:
+            embed = discord.Embed(
+                title="Configuration Error",
+                description="No required roles are configured for tryouts. Please contact an administrator.",
+                color=0xFF0000,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Check if the user has any of the required roles
         user_roles = {role.id for role in interaction.user.roles}
-        if not self.required_roles.intersection(user_roles):
+        if not set(required_roles).intersection(user_roles):
             embed = discord.Embed(
                 title="Permission Denied",
                 description="You do not have the required roles to use this command.",
@@ -141,7 +184,18 @@ class Tryout(commands.Cog, name="tryout"):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        await interaction.response.defer(ephemeral=True)  # Defer the interaction and make it ephemeral
+        await interaction.response.defer(ephemeral=True)
+
+        # Fetch tryout channel ID from the database
+        channel_id = await self.db.get_tryout_channel_id(interaction.guild.id)
+        if not channel_id:
+            embed = discord.Embed(
+                title="Configuration Error",
+                description="Tryout channel is not configured. Please contact an administrator.",
+                color=0xFF0000,
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
 
         async with aiohttp.ClientSession() as session:
             try:
@@ -153,7 +207,7 @@ class Tryout(commands.Cog, name="tryout"):
                 async with session.get(bloxlink_url, headers=headers) as bloxlink_response:
                     bloxlink_data = await bloxlink_response.json()
 
-                if bloxlink_response.status != 200 or "robloxID" not in bloxlink_data:
+                if bloxlink_response.status != 200 or not bloxlink_data.get('robloxID'):
                     embed = discord.Embed(
                         title="Error",
                         description="Failed to fetch Roblox User ID. Ensure Bloxlink is configured correctly.",
@@ -164,12 +218,11 @@ class Tryout(commands.Cog, name="tryout"):
 
                 roblox_user_id = bloxlink_data["robloxID"]
 
-                # Fetch Roblox Group Roles
+                # Fetch all Roblox Group Roles with pagination
                 roblox_url = f"https://groups.roblox.com/v1/users/{roblox_user_id}/groups/roles"
-                async with session.get(roblox_url) as roblox_response:
-                    roblox_data = await roblox_response.json()
+                all_roblox_groups = await self.fetch_all_roblox_groups(session, roblox_url)
 
-                if roblox_response.status != 200 or "data" not in roblox_data or not roblox_data["data"]:
+                if not all_roblox_groups:
                     embed = discord.Embed(
                         title="Error",
                         description="You are not in any Roblox groups.",
@@ -178,11 +231,31 @@ class Tryout(commands.Cog, name="tryout"):
                     await interaction.followup.send(embed=embed, ephemeral=True)
                     return
 
+                # Fetch group settings from the database
+                tryout_groups = await self.db.get_tryout_groups(interaction.guild.id)
+                if not tryout_groups:
+                    embed = discord.Embed(
+                        title="Configuration Error",
+                        description="No tryout groups are configured. Please contact an administrator.",
+                        color=0xFF0000,
+                    )
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                    return
+
+                # Convert tryout_groups to a dictionary
+                group_settings = {
+                    str(group[0]): {
+                        'description': group[1],
+                        'link': group[2],
+                        'event_name': group[3]
+                    } for group in tryout_groups
+                }
+
                 # Collect all matching groups
                 matching_groups = {
-                    str(group["group"]["id"]): self.group_settings[str(group["group"]["id"])]
-                    for group in roblox_data["data"]
-                    if str(group["group"]["id"]) in self.group_settings
+                    str(group["group"]["id"]): group_settings[str(group["group"]["id"])]
+                    for group in all_roblox_groups
+                    if str(group["group"]["id"]) in group_settings
                 }
 
                 if not matching_groups:
@@ -194,24 +267,79 @@ class Tryout(commands.Cog, name="tryout"):
                     await interaction.followup.send(embed=embed, ephemeral=True)
                     return
 
-                # If multiple groups, show a dropdown for selection
-                embed = discord.Embed(
-                    title="Select Group",
-                    description="You are in multiple groups. Please select the group for this tryout.",
-                    color=0x00FF00,
-                )
-                view = DropdownView(matching_groups, interaction.user, cohost, lock_time, self.group_settings, channel_id, self.bot)
-                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                # If only one matching group, proceed directly
+                if len(matching_groups) == 1:
+                    selected_group_id = next(iter(matching_groups.keys()))
+                    group_info = group_settings[selected_group_id]
+
+                    # Calculate lock time as Unix timestamp using discord.utils.utcnow()
+                    lock_timestamp = discord.utils.utcnow() + timedelta(minutes=lock_time)
+                    lock_unix = int(lock_timestamp.replace(tzinfo=discord.utils.utcnow().tzinfo).timestamp())
+                    lock_time_formatted = f"<t:{lock_unix}:R>"
+
+                    cohost_mention = cohost.mention if cohost else "N/A"
+
+                    # Build the plain text message for the tryout announcement
+                    tryout_message = (
+                        f"**[HOST]** {interaction.user.mention}\n\n"
+                        f"**[CO-HOST]** {cohost_mention}\n\n"
+                        f"**[EVENT]** {group_info['event_name']}\n\n"
+                        f"**[DESCRIPTION]** {group_info['description']}\n\n"
+                        f"**[LINK]** {group_info['link']}\n\n"
+                        f"**[LOCKS]** {lock_time_formatted}\n\n"
+                        f"**[REQUIREMENTS]**\n\n"
+                        f"• Account age of 100+ Days\n\n"
+                        f"• No Safechat\n\n"
+                        f"• Disciplined\n\n"
+                        f"• Mature\n\n"
+                        f"• Professional at all times\n\n"
+                        f"• Agent and above"
+                    )
+
+                    # Send the message to the tryout channel
+                    channel = self.bot.get_channel(channel_id)
+                    if channel:
+                        await channel.send(tryout_message)
+                        confirmation_embed = discord.Embed(
+                            title="Success",
+                            description=f"The tryout announcement for **{group_info['event_name']}** has been sent successfully!",
+                            color=0x00FF00,
+                        )
+                        await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
+                    else:
+                        error_embed = discord.Embed(
+                            title="Error",
+                            description="Unable to find the specified channel.",
+                            color=0xFF0000,
+                        )
+                        await interaction.followup.send(embed=error_embed, ephemeral=True)
+                else:
+                    # If multiple groups, show a paginated dropdown for selection
+                    embed = discord.Embed(
+                        title="Select Group",
+                        description="Please select the group for this tryout.",
+                        color=0x00FF00,
+                    )
+                    view = PaginatedDropdownView(
+                        matching_groups,
+                        interaction.user,
+                        cohost,
+                        lock_time,
+                        group_settings,
+                        channel_id,
+                        self.bot
+                    )
+                    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
             except Exception as e:
+                logger.error(f"Error in tryout command: {e}")
                 error_embed = discord.Embed(
                     title="Unexpected Error",
-                    description=f"An unexpected error occurred: {str(e)}",
+                    description="An unexpected error occurred.",
                     color=0xFF0000,
                 )
                 await interaction.followup.send(embed=error_embed, ephemeral=True)
 
-
-# Setup the cog
+# Setup function
 async def setup(bot) -> None:
     await bot.add_cog(Tryout(bot))
