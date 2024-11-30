@@ -6,7 +6,7 @@ import re
 import logging
 from datetime import datetime, timedelta
 import math
-import aiohttp  # For fetching the profanity list
+import aiohttp
 import asyncio
 
 # Logger setup
@@ -92,7 +92,10 @@ class AutoMod(commands.Cog):
         self.profanity_list = []  # Will be loaded asynchronously
         self.profanity_pattern = None  # Will be set after loading
 
-        # Start the warning expiration task
+        # Initialize bot owner ID
+        self.bot_owner_id = None
+
+        # Start the tasks
         self.expire_warnings_task.start()
         self.load_profanity_list_task.start()
 
@@ -100,6 +103,9 @@ class AutoMod(commands.Cog):
         self.db = self.bot.database  # Access DatabaseManager from the bot instance
         if not self.db:
             raise ValueError("DatabaseManager is not initialized in the bot.")
+        # Fetch and store the bot owner ID
+        app_info = await self.bot.application_info()
+        self.bot_owner_id = app_info.owner.id
 
     def is_target_server(self, guild: discord.Guild) -> bool:
         return guild and guild.id == self.target_server_id
@@ -197,9 +203,17 @@ class AutoMod(commands.Cog):
         except Exception as e:
             logger.error(f"Error loading profanity list: {e}")
 
+    # Custom check to allow bot owner or administrators to use commands
+    async def is_admin_or_owner(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.bot_owner_id:
+            return True
+        if interaction.user.guild_permissions.administrator:
+            return True
+        raise app_commands.MissingPermissions(['administrator'])
+
     @app_commands.command(name="warns", description="View all warnings for a user.")
     @app_commands.describe(user="The user to view warnings for.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.check(is_admin_or_owner)
     async def warns(self, interaction: discord.Interaction, user: discord.Member):
         if not self.is_target_server(interaction.guild):
             embed = discord.Embed(
@@ -210,12 +224,15 @@ class AutoMod(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
+        # Use the thinking function
+        await interaction.response.defer(ephemeral=True)
+
         warnings = await self.db.get_warnings(user_id=user.id, server_id=interaction.guild.id)
         if warnings:
             if len(warnings) > 7:
                 view = WarningsView(warnings, user)
                 embed = view.create_embed()
-                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
             else:
                 embed = discord.Embed(
                     title=f"Warnings for {user}",
@@ -231,18 +248,18 @@ class AutoMod(commands.Cog):
                         ),
                         inline=False,
                     )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
         else:
             embed = discord.Embed(
                 title="No Warnings Found",
                 description=f"{user.mention} has no recorded warnings.",
                 color=0x00FF00,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="clearwarnings", description="Clear all warnings for a user.")
     @app_commands.describe(user="The user to clear warnings for.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.check(is_admin_or_owner)
     async def clearwarnings(self, interaction: discord.Interaction, user: discord.Member):
         if not self.is_target_server(interaction.guild):
             embed = discord.Embed(
@@ -253,17 +270,20 @@ class AutoMod(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
+        # Use the thinking function
+        await interaction.response.defer(ephemeral=True)
+
         await self.db.clear_all_warnings(user_id=user.id, server_id=interaction.guild.id)
         embed = discord.Embed(
             title="Warnings Cleared",
             description=f"All warnings for {user.mention} have been cleared.",
             color=0x00FF00,
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="clearwarn", description="Clear a specific warning for a user.")
     @app_commands.describe(user="The user to clear warning for.", warn_id="The ID of the warning to clear.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.check(is_admin_or_owner)
     async def clearwarn(self, interaction: discord.Interaction, user: discord.Member, warn_id: int):
         if not self.is_target_server(interaction.guild):
             embed = discord.Embed(
@@ -274,6 +294,9 @@ class AutoMod(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
+        # Use the thinking function
+        await interaction.response.defer(ephemeral=True)
+
         # Attempt to remove the warning
         result = await self.db.remove_warn(warn_id=warn_id, user_id=user.id, server_id=interaction.guild.id)
         if result:
@@ -282,14 +305,14 @@ class AutoMod(commands.Cog):
                 description=f"Warning ID {warn_id} for {user.mention} has been removed.",
                 color=0x00FF00,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
         else:
             embed = discord.Embed(
                 title="Warning Not Found",
                 description=f"No warning with ID {warn_id} found for {user.mention}.",
                 color=0xFF0000,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     # Error handlers for commands
     @warns.error
