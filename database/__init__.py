@@ -4,9 +4,20 @@ class DatabaseManager:
     def __init__(self, *, connection: aiosqlite.Connection) -> None:
         self.connection = connection
 
-    # Existing methods for managing warns...
+    # ---------------------------
+    # Methods for Managing Warns
+    # ---------------------------
 
     async def add_warn(self, user_id: int, server_id: int, moderator_id: int, reason: str) -> int:
+        """
+        Adds a warning to a user.
+
+        :param user_id: ID of the user being warned.
+        :param server_id: ID of the server.
+        :param moderator_id: ID of the moderator issuing the warning.
+        :param reason: Reason for the warning.
+        :return: The ID of the newly created warning.
+        """
         try:
             async with self.connection.execute(
                 "SELECT MAX(id) FROM warns WHERE user_id=? AND server_id=?",
@@ -14,16 +25,24 @@ class DatabaseManager:
             ) as cursor:
                 result = await cursor.fetchone()
                 warn_id = (result[0] or 0) + 1
-                await self.connection.execute(
-                    "INSERT INTO warns(id, user_id, server_id, moderator_id, reason, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                    (warn_id, user_id, server_id, moderator_id, reason),
-                )
-                await self.connection.commit()
-                return warn_id
+            await self.connection.execute(
+                "INSERT INTO warns(id, user_id, server_id, moderator_id, reason, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                (warn_id, user_id, server_id, moderator_id, reason),
+            )
+            await self.connection.commit()
+            return warn_id
         except Exception as e:
             raise RuntimeError(f"Failed to add warn: {e}")
 
     async def remove_warn(self, warn_id: int, user_id: int, server_id: int) -> bool:
+        """
+        Removes a specific warning.
+
+        :param warn_id: ID of the warning to remove.
+        :param user_id: ID of the user.
+        :param server_id: ID of the server.
+        :return: True if a warning was removed, False otherwise.
+        """
         try:
             async with self.connection.execute(
                 "DELETE FROM warns WHERE id=? AND user_id=? AND server_id=?",
@@ -35,6 +54,11 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to remove warn: {e}")
 
     async def get_all_warnings(self) -> list:
+        """
+        Retrieves all warnings across all servers.
+
+        :return: A list of all warnings.
+        """
         try:
             async with self.connection.execute(
                 "SELECT user_id, server_id, moderator_id, reason, strftime('%s', created_at), id FROM warns"
@@ -44,6 +68,13 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to fetch all warnings: {e}")
 
     async def get_warnings(self, user_id: int, server_id: int) -> list:
+        """
+        Retrieves all warnings for a specific user in a server.
+
+        :param user_id: ID of the user.
+        :param server_id: ID of the server.
+        :return: A list of warnings.
+        """
         try:
             async with self.connection.execute(
                 "SELECT user_id, server_id, moderator_id, reason, strftime('%s', created_at), id FROM warns WHERE user_id=? AND server_id=?",
@@ -54,6 +85,13 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to fetch warnings: {e}")
 
     async def clear_all_warnings(self, user_id: int, server_id: int) -> int:
+        """
+        Clears all warnings for a specific user in a server.
+
+        :param user_id: ID of the user.
+        :param server_id: ID of the server.
+        :return: Number of warnings removed.
+        """
         try:
             async with self.connection.execute(
                 "DELETE FROM warns WHERE user_id=? AND server_id=?", (user_id, server_id)
@@ -64,6 +102,13 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to clear all warnings: {e}")
 
     async def count_warnings(self, user_id: int, server_id: int) -> int:
+        """
+        Counts the number of warnings a user has in a server.
+
+        :param user_id: ID of the user.
+        :param server_id: ID of the server.
+        :return: Number of warnings.
+        """
         try:
             async with self.connection.execute(
                 "SELECT COUNT(*) FROM warns WHERE user_id=? AND server_id=?",
@@ -75,6 +120,12 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to count warnings: {e}")
 
     async def remove_expired_warnings(self, expiration_timestamp: int) -> int:
+        """
+        Removes warnings older than a certain timestamp.
+
+        :param expiration_timestamp: Unix timestamp; warnings older than this will be removed.
+        :return: Number of warnings removed.
+        """
         try:
             async with self.connection.execute(
                 "DELETE FROM warns WHERE strftime('%s', created_at) < ?",
@@ -85,12 +136,19 @@ class DatabaseManager:
         except Exception as e:
             raise RuntimeError(f"Failed to remove expired warnings: {e}")
 
-    # Methods for server settings...
+    # ---------------------------
+    # Methods for Server Settings
+    # ---------------------------
 
     async def initialize_server_settings(self, server_id: int):
+        """
+        Initializes server settings with default values.
+
+        :param server_id: ID of the server.
+        """
         try:
             async with self.connection.execute(
-                "INSERT OR IGNORE INTO server_settings (server_id, automod_enabled, automod_logging_enabled, automod_log_channel_id) VALUES (?, 1, 0, NULL)",
+                "INSERT OR IGNORE INTO server_settings (server_id, automod_enabled, automod_logging_enabled, automod_log_channel_id, mod_log_channel_id) VALUES (?, 1, 0, NULL, NULL)",
                 (str(server_id),)
             ):
                 await self.connection.commit()
@@ -98,9 +156,15 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to initialize server settings: {e}")
 
     async def get_server_settings(self, server_id: int) -> dict:
+        """
+        Retrieves server settings.
+
+        :param server_id: ID of the server.
+        :return: A dictionary of server settings.
+        """
         try:
             async with self.connection.execute(
-                "SELECT automod_enabled, automod_logging_enabled, automod_log_channel_id FROM server_settings WHERE server_id=?",
+                "SELECT automod_enabled, automod_logging_enabled, automod_log_channel_id, mod_log_channel_id FROM server_settings WHERE server_id=?",
                 (str(server_id),)
             ) as cursor:
                 result = await cursor.fetchone()
@@ -108,7 +172,8 @@ class DatabaseManager:
                     return {
                         'automod_enabled': bool(result[0]),
                         'automod_logging_enabled': bool(result[1]),
-                        'automod_log_channel_id': result[2]
+                        'automod_log_channel_id': result[2],
+                        'mod_log_channel_id': result[3]
                     }
                 else:
                     # Initialize settings if they do not exist
@@ -116,12 +181,20 @@ class DatabaseManager:
                     return {
                         'automod_enabled': True,
                         'automod_logging_enabled': False,
-                        'automod_log_channel_id': None
+                        'automod_log_channel_id': None,
+                        'mod_log_channel_id': None
                     }
         except Exception as e:
             raise RuntimeError(f"Failed to get server settings: {e}")
 
     async def update_server_setting(self, server_id: int, setting_name: str, value):
+        """
+        Updates a specific server setting.
+
+        :param server_id: ID of the server.
+        :param setting_name: Name of the setting to update.
+        :param value: New value for the setting.
+        """
         try:
             query = f"UPDATE server_settings SET {setting_name} = ? WHERE server_id = ?"
             async with self.connection.execute(query, (value, str(server_id))):
@@ -130,17 +203,129 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to update server setting '{setting_name}': {e}")
 
     async def toggle_server_setting(self, server_id: int, setting_name: str):
+        """
+        Toggles a boolean server setting.
+
+        :param server_id: ID of the server.
+        :param setting_name: Name of the setting to toggle.
+        """
         try:
             current_settings = await self.get_server_settings(server_id)
             current_value = current_settings.get(setting_name)
-            new_value = not current_value
-            await self.update_server_setting(server_id, setting_name, int(new_value))
+            if isinstance(current_value, bool):
+                new_value = int(not current_value)
+            elif isinstance(current_value, (int, float)):
+                new_value = 0 if current_value else 1
+            else:
+                new_value = 1  # Default toggle
+            await self.update_server_setting(server_id, setting_name, new_value)
         except Exception as e:
             raise RuntimeError(f"Failed to toggle server setting '{setting_name}': {e}")
 
-    # Methods for tryout groups...
+    # ---------------------------
+    # Methods for Moderation Allowed Roles
+    # ---------------------------
+
+    async def get_moderation_allowed_roles(self, server_id: int) -> list:
+        """
+        Retrieves a list of role IDs allowed to use moderation commands.
+
+        :param server_id: ID of the server.
+        :return: List of role IDs.
+        """
+        try:
+            async with self.connection.execute(
+                "SELECT role_id FROM moderation_allowed_roles WHERE server_id = ?",
+                (str(server_id),)
+            ) as cursor:
+                roles = await cursor.fetchall()
+                return [int(role[0]) for role in roles]
+        except Exception as e:
+            raise RuntimeError(f"Failed to get moderation allowed roles: {e}")
+
+    async def add_moderation_allowed_role(self, server_id: int, role_id: int):
+        """
+        Adds a role to the list of allowed roles for moderation commands.
+
+        :param server_id: ID of the server.
+        :param role_id: ID of the role to add.
+        """
+        try:
+            async with self.connection.execute(
+                "INSERT INTO moderation_allowed_roles (server_id, role_id) VALUES (?, ?)",
+                (str(server_id), str(role_id))
+            ):
+                await self.connection.commit()
+        except aiosqlite.IntegrityError:
+            # Role already exists; ignore or handle as needed
+            pass
+        except Exception as e:
+            raise RuntimeError(f"Failed to add moderation allowed role: {e}")
+
+    async def remove_moderation_allowed_role(self, server_id: int, role_id: int):
+        """
+        Removes a role from the list of allowed roles for moderation commands.
+
+        :param server_id: ID of the server.
+        :param role_id: ID of the role to remove.
+        """
+        try:
+            async with self.connection.execute(
+                "DELETE FROM moderation_allowed_roles WHERE server_id = ? AND role_id = ?",
+                (str(server_id), str(role_id))
+            ):
+                await self.connection.commit()
+        except Exception as e:
+            raise RuntimeError(f"Failed to remove moderation allowed role: {e}")
+
+    # ---------------------------
+    # Methods for Moderation Log Channel
+    # ---------------------------
+
+    async def set_mod_log_channel(self, server_id: int, channel_id: int):
+        """
+        Sets the moderation log channel for a server.
+
+        :param server_id: ID of the server.
+        :param channel_id: ID of the channel to set as the moderation log channel.
+        """
+        try:
+            async with self.connection.execute(
+                "UPDATE server_settings SET mod_log_channel_id = ? WHERE server_id = ?",
+                (str(channel_id), str(server_id))
+            ):
+                await self.connection.commit()
+        except Exception as e:
+            raise RuntimeError(f"Failed to set moderation log channel: {e}")
+
+    async def get_mod_log_channel(self, server_id: int) -> int:
+        """
+        Retrieves the moderation log channel ID for a server.
+
+        :param server_id: ID of the server.
+        :return: ID of the moderation log channel, or None if not set.
+        """
+        try:
+            async with self.connection.execute(
+                "SELECT mod_log_channel_id FROM server_settings WHERE server_id = ?",
+                (str(server_id),)
+            ) as cursor:
+                result = await cursor.fetchone()
+                return int(result[0]) if result and result[0] else None
+        except Exception as e:
+            raise RuntimeError(f"Failed to get moderation log channel: {e}")
+
+    # ---------------------------
+    # Methods for Tryout Groups
+    # ---------------------------
 
     async def get_tryout_groups(self, server_id: int) -> list:
+        """
+        Retrieves all tryout groups for a server.
+
+        :param server_id: ID of the server.
+        :return: List of tryout groups.
+        """
         try:
             async with self.connection.execute(
                 "SELECT group_id, description, link, event_name FROM tryout_groups WHERE server_id = ?",
@@ -151,6 +336,13 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to get tryout groups: {e}")
 
     async def get_tryout_group(self, server_id: int, group_id: str):
+        """
+        Retrieves a specific tryout group.
+
+        :param server_id: ID of the server.
+        :param group_id: ID of the group.
+        :return: Tryout group details or None if not found.
+        """
         try:
             async with self.connection.execute(
                 "SELECT group_id, description, link, event_name FROM tryout_groups WHERE server_id = ? AND group_id = ?",
@@ -161,6 +353,15 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to get tryout group: {e}")
 
     async def add_tryout_group(self, server_id: int, group_id: str, description: str, link: str, event_name: str):
+        """
+        Adds a new tryout group.
+
+        :param server_id: ID of the server.
+        :param group_id: ID of the group.
+        :param description: Description of the group.
+        :param link: Link associated with the group.
+        :param event_name: Event name for the group.
+        """
         try:
             async with self.connection.execute(
                 "INSERT INTO tryout_groups (server_id, group_id, description, link, event_name) VALUES (?, ?, ?, ?, ?)",
@@ -171,6 +372,15 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to add tryout group: {e}")
 
     async def update_tryout_group(self, server_id: int, group_id: str, description: str, link: str, event_name: str):
+        """
+        Updates an existing tryout group.
+
+        :param server_id: ID of the server.
+        :param group_id: ID of the group.
+        :param description: New description.
+        :param link: New link.
+        :param event_name: New event name.
+        """
         try:
             async with self.connection.execute(
                 "UPDATE tryout_groups SET description = ?, link = ?, event_name = ? WHERE server_id = ? AND group_id = ?",
@@ -181,6 +391,12 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to update tryout group: {e}")
 
     async def delete_tryout_group(self, server_id: int, group_id: str):
+        """
+        Deletes a tryout group.
+
+        :param server_id: ID of the server.
+        :param group_id: ID of the group.
+        """
         try:
             async with self.connection.execute(
                 "DELETE FROM tryout_groups WHERE server_id = ? AND group_id = ?",
@@ -190,9 +406,17 @@ class DatabaseManager:
         except Exception as e:
             raise RuntimeError(f"Failed to delete tryout group: {e}")
 
-    # Methods for tryout required roles...
+    # ---------------------------
+    # Methods for Tryout Required Roles
+    # ---------------------------
 
     async def get_tryout_required_roles(self, server_id: int) -> list:
+        """
+        Retrieves all roles required for tryouts in a server.
+
+        :param server_id: ID of the server.
+        :return: List of role IDs.
+        """
         try:
             async with self.connection.execute(
                 "SELECT role_id FROM tryout_required_roles WHERE server_id = ?",
@@ -204,16 +428,31 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to get tryout required roles: {e}")
 
     async def add_tryout_required_role(self, server_id: int, role_id: int):
+        """
+        Adds a role to the list of required roles for tryouts.
+
+        :param server_id: ID of the server.
+        :param role_id: ID of the role to add.
+        """
         try:
             async with self.connection.execute(
                 "INSERT INTO tryout_required_roles (server_id, role_id) VALUES (?, ?)",
                 (str(server_id), str(role_id))
             ):
                 await self.connection.commit()
+        except aiosqlite.IntegrityError:
+            # Role already exists; ignore or handle as needed
+            pass
         except Exception as e:
-            raise RuntimeError(f"Failed to add required role: {e}")
+            raise RuntimeError(f"Failed to add tryout required role: {e}")
 
     async def remove_tryout_required_role(self, server_id: int, role_id: int):
+        """
+        Removes a role from the list of required roles for tryouts.
+
+        :param server_id: ID of the server.
+        :param role_id: ID of the role to remove.
+        """
         try:
             async with self.connection.execute(
                 "DELETE FROM tryout_required_roles WHERE server_id = ? AND role_id = ?",
@@ -221,11 +460,19 @@ class DatabaseManager:
             ):
                 await self.connection.commit()
         except Exception as e:
-            raise RuntimeError(f"Failed to remove required role: {e}")
+            raise RuntimeError(f"Failed to remove tryout required role: {e}")
 
-    # Methods for tryout settings...
+    # ---------------------------
+    # Methods for Tryout Settings
+    # ---------------------------
 
     async def get_tryout_channel_id(self, server_id: int) -> int:
+        """
+        Retrieves the tryout channel ID for a server.
+
+        :param server_id: ID of the server.
+        :return: ID of the tryout channel or None if not set.
+        """
         try:
             async with self.connection.execute(
                 "SELECT tryout_channel_id FROM tryout_settings WHERE server_id = ?",
@@ -237,6 +484,12 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to get tryout channel ID: {e}")
 
     async def set_tryout_channel_id(self, server_id: int, channel_id: int):
+        """
+        Sets the tryout channel for a server.
+
+        :param server_id: ID of the server.
+        :param channel_id: ID of the channel to set as tryout channel.
+        """
         try:
             async with self.connection.execute(
                 "INSERT OR REPLACE INTO tryout_settings (server_id, tryout_channel_id) VALUES (?, ?)",
@@ -245,3 +498,19 @@ class DatabaseManager:
                 await self.connection.commit()
         except Exception as e:
             raise RuntimeError(f"Failed to set tryout channel: {e}")
+
+    # ---------------------------
+    # Methods for Tryout Groups (if needed)
+    # ---------------------------
+
+    # (Already covered above)
+
+    # ---------------------------
+    # Additional Utility Methods (Optional)
+    # ---------------------------
+
+    async def close(self):
+        """
+        Closes the database connection.
+        """
+        await self.connection.close()
