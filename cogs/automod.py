@@ -92,7 +92,7 @@ class AutoMod(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = None  # Placeholder for the database manager instance
-        self.target_server_id = 1087452557426819203  # Replace with your server ID
+        self.target_server_id = 1287288514186182686  # Replace with your server ID
 
         # Patterns for auto-moderation
         self.roblox_group_regex = re.compile(
