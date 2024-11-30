@@ -1,11 +1,3 @@
-"""
-Copyright © Krypton 2019-Present - https://github.com/kkrypt0nn (https://krypton.ninja)
-Description:
-🐍 A simple template to start to code your own and personalized Discord bot in Python
-
-Version: 6.2.0
-"""
-
 import aiosqlite
 
 
@@ -31,7 +23,7 @@ class DatabaseManager:
                 result = await cursor.fetchone()
                 warn_id = (result[0] or 0) + 1  # Increment the last warn ID for the user
                 await self.connection.execute(
-                    "INSERT INTO warns(id, user_id, server_id, moderator_id, reason) VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO warns(id, user_id, server_id, moderator_id, reason, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
                     (warn_id, user_id, server_id, moderator_id, reason),
                 )
                 await self.connection.commit()
@@ -39,27 +31,22 @@ class DatabaseManager:
         except Exception as e:
             raise RuntimeError(f"Failed to add warn: {e}")
 
-    async def remove_warn(self, warn_id: int, user_id: int, server_id: int) -> int:
+    async def remove_warn(self, warn_id: int, user_id: int, server_id: int) -> bool:
         """
         Remove a specific warning from the database.
 
         :param warn_id: The ID of the warning to remove.
         :param user_id: The ID of the user associated with the warning.
         :param server_id: The ID of the server where the warning occurred.
-        :return: The remaining number of warnings for the user.
+        :return: True if a warning was removed, False otherwise.
         """
         try:
-            await self.connection.execute(
+            async with self.connection.execute(
                 "DELETE FROM warns WHERE id=? AND user_id=? AND server_id=?",
                 (warn_id, user_id, server_id),
-            )
-            await self.connection.commit()
-            async with self.connection.execute(
-                "SELECT COUNT(*) FROM warns WHERE user_id=? AND server_id=?",
-                (user_id, server_id),
             ) as cursor:
-                result = await cursor.fetchone()
-                return result[0] if result else 0
+                await self.connection.commit()
+                return cursor.rowcount > 0
         except Exception as e:
             raise RuntimeError(f"Failed to remove warn: {e}")
 
@@ -105,9 +92,43 @@ class DatabaseManager:
         try:
             async with self.connection.execute(
                 "DELETE FROM warns WHERE user_id=? AND server_id=?", (user_id, server_id)
-            ):
-                pass
-            await self.connection.commit()
-            return 0  # No warnings remain after clearing
+            ) as cursor:
+                await self.connection.commit()
+                return cursor.rowcount  # Return the number of warnings removed
         except Exception as e:
             raise RuntimeError(f"Failed to clear all warnings: {e}")
+
+    async def count_warnings(self, user_id: int, server_id: int) -> int:
+        """
+        Count the number of warnings for a user in a server.
+
+        :param user_id: The ID of the user.
+        :param server_id: The ID of the server.
+        :return: The number of warnings.
+        """
+        try:
+            async with self.connection.execute(
+                "SELECT COUNT(*) FROM warns WHERE user_id=? AND server_id=?",
+                (user_id, server_id),
+            ) as cursor:
+                result = await cursor.fetchone()
+                return result[0] if result else 0
+        except Exception as e:
+            raise RuntimeError(f"Failed to count warnings: {e}")
+
+    async def remove_expired_warnings(self, expiration_timestamp: int) -> int:
+        """
+        Remove all warnings older than expiration_timestamp.
+
+        :param expiration_timestamp: Timestamp; warnings older than this will be removed.
+        :return: Number of warnings removed.
+        """
+        try:
+            async with self.connection.execute(
+                "DELETE FROM warns WHERE strftime('%s', created_at) < ?",
+                (expiration_timestamp,),
+            ) as cursor:
+                await self.connection.commit()
+                return cursor.rowcount  # Return the number of warnings removed
+        except Exception as e:
+            raise RuntimeError(f"Failed to remove expired warnings: {e}")
