@@ -16,6 +16,20 @@ handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s"))
 logger.addHandler(handler)
 
+# Define the check function outside the class
+async def is_admin_or_owner(interaction: discord.Interaction) -> bool:
+    # Access bot via interaction.client
+    bot = interaction.client
+    # Check if owner_id is cached
+    if not hasattr(bot, 'owner_id'):
+        app_info = await bot.application_info()
+        bot.owner_id = app_info.owner.id
+    bot_owner_id = bot.owner_id
+    if interaction.user.id == bot_owner_id:
+        return True
+    if interaction.user.guild_permissions.administrator:
+        return True
+    raise app_commands.MissingPermissions(['administrator'])
 
 class WarningsView(discord.ui.View):
     def __init__(self, warnings, user, per_page=7):
@@ -92,9 +106,6 @@ class AutoMod(commands.Cog):
         self.profanity_list = []  # Will be loaded asynchronously
         self.profanity_pattern = None  # Will be set after loading
 
-        # Initialize bot owner ID
-        self.bot_owner_id = None
-
         # Start the tasks
         self.expire_warnings_task.start()
         self.load_profanity_list_task.start()
@@ -103,9 +114,6 @@ class AutoMod(commands.Cog):
         self.db = self.bot.database  # Access DatabaseManager from the bot instance
         if not self.db:
             raise ValueError("DatabaseManager is not initialized in the bot.")
-        # Fetch and store the bot owner ID
-        app_info = await self.bot.application_info()
-        self.bot_owner_id = app_info.owner.id
 
     def is_target_server(self, guild: discord.Guild) -> bool:
         return guild and guild.id == self.target_server_id
@@ -202,14 +210,6 @@ class AutoMod(commands.Cog):
                         logger.error(f"Failed to load profanity list: HTTP {response.status}")
         except Exception as e:
             logger.error(f"Error loading profanity list: {e}")
-
-    # Custom check to allow bot owner or administrators to use commands
-    async def is_admin_or_owner(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.bot_owner_id:
-            return True
-        if interaction.user.guild_permissions.administrator:
-            return True
-        raise app_commands.MissingPermissions(['administrator'])
 
     @app_commands.command(name="warns", description="View all warnings for a user.")
     @app_commands.describe(user="The user to view warnings for.")
@@ -323,7 +323,10 @@ class AutoMod(commands.Cog):
                 description="You need the `Administrator` permission to use this command.",
                 color=0xFF0000,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
             logger.error(f"Error in /warns command: {error}")
             raise error
@@ -336,7 +339,10 @@ class AutoMod(commands.Cog):
                 description="You need the `Administrator` permission to use this command.",
                 color=0xFF0000,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
             logger.error(f"Error in /clearwarnings command: {error}")
             raise error
@@ -349,7 +355,10 @@ class AutoMod(commands.Cog):
                 description="You need the `Administrator` permission to use this command.",
                 color=0xFF0000,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
             logger.error(f"Error in /clearwarn command: {error}")
             raise error
