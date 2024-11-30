@@ -1,22 +1,12 @@
-"""
-Copyright © Krypton 2019-Present - https://github.com/kkrypt0nn (https://krypton.ninja)
-Description:
-🐍 A simple template to start to code your own and personalized Discord bot in Python
-
-Version: 6.2.0
-"""
-
 import platform
-import random
 
-import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 from discord.ext.commands import Context
 
 
-class FeedbackForm(discord.ui.Modal, title="Feeedback"):
+class FeedbackForm(discord.ui.Modal, title="Feedback"):
     feedback = discord.ui.TextInput(
         label="What do you think about this bot?",
         style=discord.TextStyle.long,
@@ -48,7 +38,7 @@ class General(commands.Cog, name="general"):
         self, interaction: discord.Interaction, message: discord.Message
     ) -> None:
         """
-        Removes the spoilers from the message. This command requires the MESSAGE_CONTENT intent to work properly.
+        Removes the spoilers from the message.
 
         :param interaction: The application command interaction.
         :param message: The message that is being interacted with.
@@ -91,19 +81,52 @@ class General(commands.Cog, name="general"):
         embed = discord.Embed(
             title="Help", description="List of available commands:", color=0xBEBEFE
         )
-        for i in self.bot.cogs:
-            if i == "owner" and not (await self.bot.is_owner(context.author)):
+        # Create a mapping from cog names to list of commands
+        cog_commands = {}
+        # Create a set to keep track of command names already included
+        included_commands = set()
+        # Regular commands
+        for command in self.bot.commands:
+            if command.name in included_commands:
                 continue
-            cog = self.bot.get_cog(i.lower())
-            commands = cog.get_commands()
-            data = []
-            for command in commands:
-                description = command.description.partition("\n")[0]
-                data.append(f"{prefix}{command.name} - {description}")
-            help_text = "\n".join(data)
-            embed.add_field(
-                name=i.capitalize(), value=f"```{help_text}```", inline=False
-            )
+            if isinstance(command, commands.HybridCommand):
+                # We'll include hybrid commands as slash commands later
+                continue  # Skip hybrid commands here
+            cog_name = command.cog_name or "No Category"
+            if cog_name not in cog_commands:
+                cog_commands[cog_name] = []
+            description = command.description.partition('\n')[0]
+            command_entry = "{}{} - {}".format(prefix, command.name, description)
+            cog_commands[cog_name].append(command_entry)
+            included_commands.add(command.name)
+        # Application commands
+        for app_command in self.bot.tree.walk_commands():
+            if app_command.name in included_commands:
+                continue
+            binding = app_command.binding
+            if isinstance(binding, commands.Cog):
+                cog_name = binding.qualified_name
+            else:
+                cog_name = "No Category"
+            if cog_name not in cog_commands:
+                cog_commands[cog_name] = []
+            if isinstance(app_command, app_commands.Command):
+                description = app_command.description.partition('\n')[0]
+                command_entry = "/{} - {}".format(app_command.name, description)
+                cog_commands[cog_name].append(command_entry)
+                included_commands.add(app_command.name)
+        # Now build the embed
+        for cog_name, commands_list in cog_commands.items():
+            if cog_name == "owner" and not (await self.bot.is_owner(context.author)):
+                continue
+            if commands_list:
+                help_text = "\n".join(commands_list)
+                # Use str.format() instead of f-string to avoid SyntaxError
+                embed.add_field(
+                    name=cog_name.capitalize(),
+                    value="```{}```".format(help_text),
+                    inline=False,
+                )
         await context.send(embed=embed)
 
     @commands.hybrid_command(
@@ -181,15 +204,14 @@ class General(commands.Cog, name="general"):
         )
         await context.send(embed=embed)
 
-    
     @app_commands.command(
-        name="feedback", description="Submit a feedback for the owners of the bot"
+        name="feedback", description="Submit feedback to the owners of the bot."
     )
     async def feedback(self, interaction: discord.Interaction) -> None:
         """
-        Submit a feedback for the owners of the bot.
+        Submit feedback for the owners of the bot.
 
-        :param context: The hybrid command context.
+        :param interaction: The command interaction.
         """
         feedback_form = FeedbackForm()
         await interaction.response.send_modal(feedback_form)
@@ -198,7 +220,7 @@ class General(commands.Cog, name="general"):
         interaction = feedback_form.interaction
         await interaction.response.send_message(
             embed=discord.Embed(
-                description="Thank you for your feedback, the owners have been notified about it.",
+                description="Thank you for your feedback! The owners have been notified.",
                 color=0xBEBEFE,
             )
         )
@@ -207,7 +229,7 @@ class General(commands.Cog, name="general"):
         await app_owner.send(
             embed=discord.Embed(
                 title="New Feedback",
-                description=f"{interaction.user} (<@{interaction.user.id}>) has submitted a new feedback:\n```\n{feedback_form.answer}\n```",
+                description=f"{interaction.user} (<@{interaction.user.id}>) has submitted new feedback:\n```\n{feedback_form.answer}\n```",
                 color=0xBEBEFE,
             )
         )

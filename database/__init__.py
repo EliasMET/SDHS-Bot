@@ -1,6 +1,5 @@
 import aiosqlite
 
-
 class DatabaseManager:
     def __init__(self, *, connection: aiosqlite.Connection) -> None:
         self.connection = connection
@@ -132,3 +131,68 @@ class DatabaseManager:
                 return cursor.rowcount  # Return the number of warnings removed
         except Exception as e:
             raise RuntimeError(f"Failed to remove expired warnings: {e}")
+
+    # New methods for server settings
+
+    async def initialize_server_settings(self, server_id: int):
+        """
+        Initialize default settings for a server if they do not exist.
+        """
+        try:
+            async with self.connection.execute(
+                "INSERT OR IGNORE INTO server_settings (server_id, automod_enabled, automod_logging_enabled, automod_log_channel_id) VALUES (?, 1, 0, NULL)",
+                (str(server_id),)
+            ):
+                await self.connection.commit()
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize server settings: {e}")
+
+    async def get_server_settings(self, server_id: int) -> dict:
+        """
+        Retrieve server settings from the database.
+        """
+        try:
+            async with self.connection.execute(
+                "SELECT automod_enabled, automod_logging_enabled, automod_log_channel_id FROM server_settings WHERE server_id=?",
+                (str(server_id),)
+            ) as cursor:
+                result = await cursor.fetchone()
+                if result:
+                    return {
+                        'automod_enabled': bool(result[0]),
+                        'automod_logging_enabled': bool(result[1]),
+                        'automod_log_channel_id': result[2]
+                    }
+                else:
+                    # Initialize settings if they do not exist
+                    await self.initialize_server_settings(server_id)
+                    return {
+                        'automod_enabled': True,
+                        'automod_logging_enabled': False,
+                        'automod_log_channel_id': None
+                    }
+        except Exception as e:
+            raise RuntimeError(f"Failed to get server settings: {e}")
+
+    async def update_server_setting(self, server_id: int, setting_name: str, value):
+        """
+        Update a specific server setting.
+        """
+        try:
+            query = f"UPDATE server_settings SET {setting_name} = ? WHERE server_id = ?"
+            async with self.connection.execute(query, (value, str(server_id))):
+                await self.connection.commit()
+        except Exception as e:
+            raise RuntimeError(f"Failed to update server setting '{setting_name}': {e}")
+
+    async def toggle_server_setting(self, server_id: int, setting_name: str):
+        """
+        Toggle a boolean server setting.
+        """
+        try:
+            current_settings = await self.get_server_settings(server_id)
+            current_value = current_settings.get(setting_name)
+            new_value = not current_value
+            await self.update_server_setting(server_id, setting_name, int(new_value))
+        except Exception as e:
+            raise RuntimeError(f"Failed to toggle server setting '{setting_name}': {e}")

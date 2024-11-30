@@ -33,7 +33,7 @@ async def is_admin_or_owner(interaction: discord.Interaction) -> bool:
 
 class WarningsView(discord.ui.View):
     def __init__(self, warnings, user, per_page=7):
-        super().__init__()
+        super().__init__(timeout=180)
         self.warnings = warnings
         self.user = user
         self.per_page = per_page
@@ -67,7 +67,7 @@ class WarningsView(discord.ui.View):
                 value=(
                     f"**Reason:** {warn[3]}\n"
                     f"**Moderator:** <@{warn[2]}>\n"
-                    f"**Date:** <t:{warn[4]}:F>"
+                    f"**Date:** <t:{int(warn[4])}:F>"
                 ),
                 inline=False,
             )
@@ -86,7 +86,6 @@ class WarningsView(discord.ui.View):
             self.update_buttons()
             embed = self.create_embed()
             await interaction.response.edit_message(embed=embed, view=self)
-
 
 class AutoMod(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -120,6 +119,9 @@ class AutoMod(commands.Cog):
 
     async def handle_message_violation(self, message: discord.Message, reason: str):
         try:
+            # Delete the violating message instantly
+            await message.delete()
+
             # Log the violation to the database
             warn_id = await self.db.add_warn(
                 user_id=message.author.id,
@@ -128,15 +130,12 @@ class AutoMod(commands.Cog):
                 reason=reason,
             )
 
-            # Send a simple embed warning message
-            embed = discord.Embed(
-                description=(
-                    f"{message.author.mention}, your message violated the server rules.\n"
-                    f"**Reason:** {reason}"
-                ),
-                color=0xFFCC00,
+            # Send a plain warning message
+            warning_msg = (
+                f"{message.author.mention}, your message violated the server rules.\n"
+                f"**Reason:** {reason}"
             )
-            moderation_message = await message.channel.send(embed=embed)
+            moderation_message = await message.channel.send(warning_msg)
 
             # Check the number of warnings
             warning_count = await self.db.count_warnings(
@@ -161,14 +160,34 @@ class AutoMod(commands.Cog):
             await asyncio.sleep(10)
             await moderation_message.delete()
 
-            # Delete the offending message
-            await message.delete()
+            # Log the automod action if logging is enabled
+            server_settings = await self.db.get_server_settings(message.guild.id)
+            if server_settings.get('automod_logging_enabled'):
+                log_channel_id = server_settings.get('automod_log_channel_id')
+                if log_channel_id:
+                    log_channel = message.guild.get_channel(int(log_channel_id))
+                    if log_channel:
+                        log_embed = discord.Embed(
+                            title="🚨 Automod Violation",
+                            color=0xFF0000,
+                            timestamp=datetime.utcnow()
+                        )
+                        log_embed.add_field(name="User", value=message.author.mention, inline=True)
+                        log_embed.add_field(name="Action", value=reason, inline=True)
+                        log_embed.add_field(name="Channel", value=message.channel.mention, inline=True)
+                        log_embed.set_footer(text=f"User ID: {message.author.id}")
+                        await log_channel.send(embed=log_embed)
         except Exception as e:
             logger.error(f"Failed to handle message violation: {e}")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if not self.is_target_server(message.guild) or message.author.bot:
+            return
+
+        # Check if automod is enabled for this server
+        server_settings = await self.db.get_server_settings(message.guild.id)
+        if not server_settings.get('automod_enabled', True):
             return
 
         content = message.content
@@ -211,6 +230,54 @@ class AutoMod(commands.Cog):
         except Exception as e:
             logger.error(f"Error loading profanity list: {e}")
 
+    @app_commands.command(name="settings", description="Configure automod settings.")
+    @app_commands.check(is_admin_or_owner)
+    async def settings(self, interaction: discord.Interaction):
+        if not self.is_target_server(interaction.guild):
+            embed = discord.Embed(
+                title="Permission Denied",
+                description="This command can only be used in the designated server.",
+                color=0xFF0000,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Use the thinking function
+        await interaction.response.defer(ephemeral=True)
+
+        # Fetch current settings
+        server_settings = await self.db.get_server_settings(interaction.guild.id)
+        if not server_settings:
+            await self.db.initialize_server_settings(interaction.guild.id)
+            server_settings = await self.db.get_server_settings(interaction.guild.id)
+
+        # Create the settings embed
+        embed = self.create_settings_embed(server_settings)
+
+        # Create the view with buttons
+        view = SettingsView(self.db, interaction.guild)
+        view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    def create_settings_embed(self, server_settings):
+        automod_status = "✅ Enabled" if server_settings.get('automod_enabled') else "❌ Disabled"
+        logging_status = "✅ Enabled" if server_settings.get('automod_logging_enabled') else "❌ Disabled"
+        log_channel_id = server_settings.get('automod_log_channel_id')
+        if log_channel_id:
+            log_channel = f"<#{log_channel_id}>"
+        else:
+            log_channel = "Not Set"
+
+        embed = discord.Embed(
+            title="⚙️ Automod Settings",
+            color=0x5865F2,
+            description="Use the buttons below to configure settings."
+        )
+        embed.add_field(name="Automod Status", value=automod_status, inline=True)
+        embed.add_field(name="Logging Status", value=logging_status, inline=True)
+        embed.add_field(name="Log Channel", value=log_channel, inline=False)
+        embed.set_footer(text="Settings will timeout after 3 minutes of inactivity.")
+        return embed
+
     @app_commands.command(name="warns", description="View all warnings for a user.")
     @app_commands.describe(user="The user to view warnings for.")
     @app_commands.check(is_admin_or_owner)
@@ -244,7 +311,7 @@ class AutoMod(commands.Cog):
                         value=(
                             f"**Reason:** {warn[3]}\n"
                             f"**Moderator:** <@{warn[2]}>\n"
-                            f"**Date:** <t:{warn[4]}:F>"
+                            f"**Date:** <t:{int(warn[4])}:F>"
                         ),
                         inline=False,
                     )
@@ -363,6 +430,74 @@ class AutoMod(commands.Cog):
             logger.error(f"Error in /clearwarn command: {error}")
             raise error
 
+    @settings.error
+    async def settings_error(self, interaction: discord.Interaction, error):
+        if isinstance(error, app_commands.MissingPermissions):
+            embed = discord.Embed(
+                title="Missing Permissions",
+                description="You need the `Administrator` permission to use this command.",
+                color=0xFF0000,
+            )
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        else:
+            logger.error(f"Error in /settings command: {error}")
+            raise error
+
+# Define the SettingsView for interactive settings configuration
+class SettingsView(discord.ui.View):
+    def __init__(self, db, guild):
+        super().__init__(timeout=180)  # View will timeout after 3 minutes
+        self.db = db
+        self.guild = guild
+        self.message = None  # Will be set when the message is sent
+
+    @discord.ui.button(label="Toggle Automod", style=discord.ButtonStyle.primary, emoji="🔄")
+    async def toggle_automod(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await self.db.toggle_server_setting(self.guild.id, 'automod_enabled')
+        await self.update_settings_message()
+
+    @discord.ui.button(label="Toggle Logging", style=discord.ButtonStyle.primary, emoji="📝")
+    async def toggle_logging(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await self.db.toggle_server_setting(self.guild.id, 'automod_logging_enabled')
+        await self.update_settings_message()
+
+    @discord.ui.button(label="Set Log Channel", style=discord.ButtonStyle.primary, emoji="📌")
+    async def set_log_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "Please mention the channel you want to set as the log channel.",
+            ephemeral=True
+        )
+
+        def check(m):
+            return m.author.id == interaction.user.id and m.channel == interaction.channel
+
+        try:
+            msg = await interaction.client.wait_for('message', check=check, timeout=60)
+            if msg.channel_mentions:
+                channel = msg.channel_mentions[0]
+                await self.db.update_server_setting(self.guild.id, 'automod_log_channel_id', str(channel.id))
+                await msg.delete()
+                await self.update_settings_message()
+            else:
+                await interaction.followup.send("No channel mentioned. Please try again.", ephemeral=True)
+        except asyncio.TimeoutError:
+            await interaction.followup.send("You took too long to respond.", ephemeral=True)
+
+    async def update_settings_message(self):
+        server_settings = await self.db.get_server_settings(self.guild.id)
+        embed = AutoMod.create_settings_embed(self=None, server_settings=server_settings)
+        await self.message.edit(embed=embed, view=self)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            await self.message.edit(view=self)
 
 # Setup function
 async def setup(bot):
