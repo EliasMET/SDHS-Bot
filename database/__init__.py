@@ -4,6 +4,79 @@ class DatabaseManager:
     def __init__(self, *, connection: aiosqlite.Connection) -> None:
         self.connection = connection
 
+    async def initialize_database(self):
+        """
+        Initializes the database by creating necessary tables if they do not exist.
+        """
+        try:
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS warns (
+                    id INTEGER PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    moderator_id TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+            """)
+
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS server_settings (
+                    server_id TEXT PRIMARY KEY,
+                    automod_enabled INTEGER NOT NULL DEFAULT 1,
+                    automod_logging_enabled INTEGER NOT NULL DEFAULT 0,
+                    automod_log_channel_id TEXT,
+                    mod_log_channel_id TEXT
+                );
+            """)
+
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS moderation_allowed_roles (
+                    server_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    PRIMARY KEY (server_id, role_id)
+                );
+            """)
+
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS tryout_groups (
+                    server_id TEXT NOT NULL,
+                    group_id TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    link TEXT NOT NULL,
+                    event_name TEXT NOT NULL,
+                    PRIMARY KEY (server_id, group_id)
+                );
+            """)
+
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS tryout_required_roles (
+                    server_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    PRIMARY KEY (server_id, role_id)
+                );
+            """)
+
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS tryout_settings (
+                    server_id TEXT PRIMARY KEY,
+                    tryout_channel_id TEXT
+                );
+            """)
+
+            # Create locked_channels table
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS locked_channels (
+                    server_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    PRIMARY KEY (server_id, channel_id)
+                );
+            """)
+
+            await self.connection.commit()
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize database: {e}")
+
     # ---------------------------
     # Methods for Managing Warns
     # ---------------------------
@@ -21,13 +94,13 @@ class DatabaseManager:
         try:
             async with self.connection.execute(
                 "SELECT MAX(id) FROM warns WHERE user_id=? AND server_id=?",
-                (user_id, server_id),
+                (str(user_id), str(server_id)),
             ) as cursor:
                 result = await cursor.fetchone()
                 warn_id = (result[0] or 0) + 1
             await self.connection.execute(
                 "INSERT INTO warns(id, user_id, server_id, moderator_id, reason, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                (warn_id, user_id, server_id, moderator_id, reason),
+                (warn_id, str(user_id), str(server_id), str(moderator_id), reason),
             )
             await self.connection.commit()
             return warn_id
@@ -46,7 +119,7 @@ class DatabaseManager:
         try:
             async with self.connection.execute(
                 "DELETE FROM warns WHERE id=? AND user_id=? AND server_id=?",
-                (warn_id, user_id, server_id),
+                (warn_id, str(user_id), str(server_id)),
             ) as cursor:
                 await self.connection.commit()
                 return cursor.rowcount > 0
@@ -78,7 +151,7 @@ class DatabaseManager:
         try:
             async with self.connection.execute(
                 "SELECT user_id, server_id, moderator_id, reason, strftime('%s', created_at), id FROM warns WHERE user_id=? AND server_id=?",
-                (user_id, server_id),
+                (str(user_id), str(server_id)),
             ) as cursor:
                 return await cursor.fetchall()
         except Exception as e:
@@ -94,7 +167,7 @@ class DatabaseManager:
         """
         try:
             async with self.connection.execute(
-                "DELETE FROM warns WHERE user_id=? AND server_id=?", (user_id, server_id)
+                "DELETE FROM warns WHERE user_id=? AND server_id=?", (str(user_id), str(server_id))
             ) as cursor:
                 await self.connection.commit()
                 return cursor.rowcount
@@ -112,7 +185,7 @@ class DatabaseManager:
         try:
             async with self.connection.execute(
                 "SELECT COUNT(*) FROM warns WHERE user_id=? AND server_id=?",
-                (user_id, server_id),
+                (str(user_id), str(server_id)),
             ) as cursor:
                 result = await cursor.fetchone()
                 return result[0] if result else 0
@@ -129,7 +202,7 @@ class DatabaseManager:
         try:
             async with self.connection.execute(
                 "DELETE FROM warns WHERE strftime('%s', created_at) < ?",
-                (expiration_timestamp,),
+                (str(expiration_timestamp),),
             ) as cursor:
                 await self.connection.commit()
                 return cursor.rowcount
@@ -147,11 +220,11 @@ class DatabaseManager:
         :param server_id: ID of the server.
         """
         try:
-            async with self.connection.execute(
+            await self.connection.execute(
                 "INSERT OR IGNORE INTO server_settings (server_id, automod_enabled, automod_logging_enabled, automod_log_channel_id, mod_log_channel_id) VALUES (?, 1, 0, NULL, NULL)",
                 (str(server_id),)
-            ):
-                await self.connection.commit()
+            )
+            await self.connection.commit()
         except Exception as e:
             raise RuntimeError(f"Failed to initialize server settings: {e}")
 
@@ -172,8 +245,8 @@ class DatabaseManager:
                     return {
                         'automod_enabled': bool(result[0]),
                         'automod_logging_enabled': bool(result[1]),
-                        'automod_log_channel_id': result[2],
-                        'mod_log_channel_id': result[3]
+                        'automod_log_channel_id': int(result[2]) if result[2] else None,
+                        'mod_log_channel_id': int(result[3]) if result[3] else None
                     }
                 else:
                     # Initialize settings if they do not exist
@@ -197,8 +270,8 @@ class DatabaseManager:
         """
         try:
             query = f"UPDATE server_settings SET {setting_name} = ? WHERE server_id = ?"
-            async with self.connection.execute(query, (value, str(server_id))):
-                await self.connection.commit()
+            await self.connection.execute(query, (str(value) if value is not None else None, str(server_id)))
+            await self.connection.commit()
         except Exception as e:
             raise RuntimeError(f"Failed to update server setting '{setting_name}': {e}")
 
@@ -251,11 +324,11 @@ class DatabaseManager:
         :param role_id: ID of the role to add.
         """
         try:
-            async with self.connection.execute(
+            await self.connection.execute(
                 "INSERT INTO moderation_allowed_roles (server_id, role_id) VALUES (?, ?)",
                 (str(server_id), str(role_id))
-            ):
-                await self.connection.commit()
+            )
+            await self.connection.commit()
         except aiosqlite.IntegrityError:
             # Role already exists; ignore or handle as needed
             pass
@@ -270,11 +343,11 @@ class DatabaseManager:
         :param role_id: ID of the role to remove.
         """
         try:
-            async with self.connection.execute(
+            await self.connection.execute(
                 "DELETE FROM moderation_allowed_roles WHERE server_id = ? AND role_id = ?",
                 (str(server_id), str(role_id))
-            ):
-                await self.connection.commit()
+            )
+            await self.connection.commit()
         except Exception as e:
             raise RuntimeError(f"Failed to remove moderation allowed role: {e}")
 
@@ -290,11 +363,11 @@ class DatabaseManager:
         :param channel_id: ID of the channel to set as the moderation log channel.
         """
         try:
-            async with self.connection.execute(
+            await self.connection.execute(
                 "UPDATE server_settings SET mod_log_channel_id = ? WHERE server_id = ?",
                 (str(channel_id), str(server_id))
-            ):
-                await self.connection.commit()
+            )
+            await self.connection.commit()
         except Exception as e:
             raise RuntimeError(f"Failed to set moderation log channel: {e}")
 
@@ -363,11 +436,11 @@ class DatabaseManager:
         :param event_name: Event name for the group.
         """
         try:
-            async with self.connection.execute(
+            await self.connection.execute(
                 "INSERT INTO tryout_groups (server_id, group_id, description, link, event_name) VALUES (?, ?, ?, ?, ?)",
                 (str(server_id), group_id, description, link, event_name)
-            ):
-                await self.connection.commit()
+            )
+            await self.connection.commit()
         except Exception as e:
             raise RuntimeError(f"Failed to add tryout group: {e}")
 
@@ -382,11 +455,11 @@ class DatabaseManager:
         :param event_name: New event name.
         """
         try:
-            async with self.connection.execute(
+            await self.connection.execute(
                 "UPDATE tryout_groups SET description = ?, link = ?, event_name = ? WHERE server_id = ? AND group_id = ?",
                 (description, link, event_name, str(server_id), group_id)
-            ):
-                await self.connection.commit()
+            )
+            await self.connection.commit()
         except Exception as e:
             raise RuntimeError(f"Failed to update tryout group: {e}")
 
@@ -398,11 +471,11 @@ class DatabaseManager:
         :param group_id: ID of the group.
         """
         try:
-            async with self.connection.execute(
+            await self.connection.execute(
                 "DELETE FROM tryout_groups WHERE server_id = ? AND group_id = ?",
                 (str(server_id), group_id)
-            ):
-                await self.connection.commit()
+            )
+            await self.connection.commit()
         except Exception as e:
             raise RuntimeError(f"Failed to delete tryout group: {e}")
 
@@ -435,11 +508,11 @@ class DatabaseManager:
         :param role_id: ID of the role to add.
         """
         try:
-            async with self.connection.execute(
+            await self.connection.execute(
                 "INSERT INTO tryout_required_roles (server_id, role_id) VALUES (?, ?)",
                 (str(server_id), str(role_id))
-            ):
-                await self.connection.commit()
+            )
+            await self.connection.commit()
         except aiosqlite.IntegrityError:
             # Role already exists; ignore or handle as needed
             pass
@@ -454,11 +527,11 @@ class DatabaseManager:
         :param role_id: ID of the role to remove.
         """
         try:
-            async with self.connection.execute(
+            await self.connection.execute(
                 "DELETE FROM tryout_required_roles WHERE server_id = ? AND role_id = ?",
                 (str(server_id), str(role_id))
-            ):
-                await self.connection.commit()
+            )
+            await self.connection.commit()
         except Exception as e:
             raise RuntimeError(f"Failed to remove tryout required role: {e}")
 
@@ -491,19 +564,86 @@ class DatabaseManager:
         :param channel_id: ID of the channel to set as tryout channel.
         """
         try:
-            async with self.connection.execute(
+            await self.connection.execute(
                 "INSERT OR REPLACE INTO tryout_settings (server_id, tryout_channel_id) VALUES (?, ?)",
                 (str(server_id), str(channel_id))
-            ):
-                await self.connection.commit()
+            )
+            await self.connection.commit()
         except Exception as e:
             raise RuntimeError(f"Failed to set tryout channel: {e}")
 
     # ---------------------------
-    # Methods for Tryout Groups (if needed)
+    # Methods for Locked Channels
     # ---------------------------
 
-    # (Already covered above)
+    async def is_channel_locked(self, server_id: int, channel_id: int) -> bool:
+        """
+        Checks if a specific channel in a server is locked.
+
+        :param server_id: ID of the server.
+        :param channel_id: ID of the channel.
+        :return: True if the channel is locked, False otherwise.
+        """
+        try:
+            async with self.connection.execute(
+                "SELECT 1 FROM locked_channels WHERE server_id = ? AND channel_id = ?",
+                (str(server_id), str(channel_id))
+            ) as cursor:
+                return await cursor.fetchone() is not None
+        except Exception as e:
+            raise RuntimeError(f"Failed to check if channel is locked: {e}")
+
+    async def lock_channel_in_db(self, server_id: int, channel_id: int):
+        """
+        Locks a specific channel in a server by adding it to the locked_channels table.
+
+        :param server_id: ID of the server.
+        :param channel_id: ID of the channel to lock.
+        """
+        try:
+            await self.connection.execute(
+                "INSERT INTO locked_channels (server_id, channel_id) VALUES (?, ?)",
+                (str(server_id), str(channel_id))
+            )
+            await self.connection.commit()
+        except aiosqlite.IntegrityError:
+            # Channel is already locked; no action needed
+            pass
+        except Exception as e:
+            raise RuntimeError(f"Failed to lock channel: {e}")
+
+    async def unlock_channel_in_db(self, server_id: int, channel_id: int):
+        """
+        Unlocks a specific channel in a server by removing it from the locked_channels table.
+
+        :param server_id: ID of the server.
+        :param channel_id: ID of the channel to unlock.
+        """
+        try:
+            await self.connection.execute(
+                "DELETE FROM locked_channels WHERE server_id = ? AND channel_id = ?",
+                (str(server_id), str(channel_id))
+            )
+            await self.connection.commit()
+        except Exception as e:
+            raise RuntimeError(f"Failed to unlock channel: {e}")
+
+    async def get_locked_channels(self, server_id: int) -> list:
+        """
+        Retrieves all locked channels for a specific server.
+
+        :param server_id: ID of the server.
+        :return: List of channel IDs that are locked.
+        """
+        try:
+            async with self.connection.execute(
+                "SELECT channel_id FROM locked_channels WHERE server_id = ?",
+                (str(server_id),)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [int(row[0]) for row in rows]
+        except Exception as e:
+            raise RuntimeError(f"Failed to retrieve locked channels: {e}")
 
     # ---------------------------
     # Additional Utility Methods (Optional)

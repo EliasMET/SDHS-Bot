@@ -45,3 +45,9 @@ CREATE TABLE IF NOT EXISTS `moderation_allowed_roles` (
   `server_id` VARCHAR(20) NOT NULL,
   `role_id` VARCHAR(20) NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS locked_channels (
+    `server_id` TEXT,
+    `channel_id` TEXT,
+    PRIMARY KEY (server_id, channel_id)
+);
