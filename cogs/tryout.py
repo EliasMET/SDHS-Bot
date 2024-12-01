@@ -78,7 +78,6 @@ class PaginatedDropdownView(discord.ui.View):
 
         # Build the plain text message for the tryout announcement with Roblox profile link
         tryout_message = (
-            f"{ping_roles_text}\n"  # Ping the roles
             f"**[HOST]** {self.user.mention}\n\n"
             f"**[CO-HOST]** {cohost_mention}\n\n"
             f"**[EVENT]** {group_info['event_name']}\n\n"
@@ -315,7 +314,6 @@ class Tryout(commands.Cog, name="tryout"):
 
                     # Build the plain text message for the tryout announcement with Roblox profile link
                     tryout_message = (
-                        f"{ping_roles_text}\n"  # Ping the roles
                         f"**[HOST]** {interaction.user.mention}\n\n"
                         f"**[CO-HOST]** {cohost_mention}\n\n"
                         f"**[EVENT]** {group_info['event_name']}\n\n"
