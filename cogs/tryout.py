@@ -6,15 +6,8 @@ from datetime import timedelta
 import logging
 import os
 
-# Logger setup
-logger = logging.getLogger("TryoutCog")
-logger.setLevel(logging.DEBUG)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s"))
-logger.addHandler(handler)
-
 class PaginatedDropdownView(discord.ui.View):
-    def __init__(self, groups, user, cohost, lock_time, group_settings, channel_id, bot, roblox_user_id, per_page=25):
+    def __init__(self, groups, user, cohost, lock_time, group_settings, channel_id, bot, roblox_user_id, settings_cog, per_page=25):
         super().__init__(timeout=180)  # Set a timeout for the view
         self.groups = list(groups.items())
         self.user = user
@@ -23,6 +16,7 @@ class PaginatedDropdownView(discord.ui.View):
         self.group_settings = group_settings
         self.channel_id = channel_id
         self.bot = bot
+        self.settings_cog = settings_cog
         self.per_page = per_page
         self.current_page = 0
         self.total_pages = (len(self.groups) - 1) // per_page + 1
@@ -67,7 +61,7 @@ class PaginatedDropdownView(discord.ui.View):
 
         # Calculate lock time as Unix timestamp using discord.utils.utcnow()
         lock_timestamp = discord.utils.utcnow() + timedelta(minutes=self.lock_time)
-        lock_unix = int(lock_timestamp.replace(tzinfo=discord.utils.utcnow().tzinfo).timestamp())
+        lock_unix = int(lock_timestamp.timestamp())
         lock_time_formatted = f"<t:{lock_unix}:R>"
 
         cohost_mention = self.cohost.mention if self.cohost else "N/A"
@@ -111,7 +105,7 @@ class PaginatedDropdownView(discord.ui.View):
                 color=0x00FF00,
             )
             await interaction.followup.edit_message(message_id=interaction.message.id, embed=confirmation_embed, view=None)
-            logger.info(f"Tryout announcement for '{group_info['event_name']}' sent by {self.user} in guild ID {self.bot.guild_id}.")
+            self.settings_cog.bot.logger.info(f"Tryout announcement for '{group_info['event_name']}' sent by {self.user} in guild ID {self.bot.guild_id}.")
         else:
             error_embed = discord.Embed(
                 title="Error",
@@ -119,7 +113,7 @@ class PaginatedDropdownView(discord.ui.View):
                 color=0xFF0000,
             )
             await interaction.followup.edit_message(message_id=interaction.message.id, embed=error_embed, view=None)
-            logger.error(f"Channel ID {self.channel_id} not found in guild ID {self.bot.guild_id}.")
+            self.settings_cog.bot.logger.error(f"Channel ID {self.channel_id} not found in guild ID {self.bot.guild_id}.")
 
     async def prev_page(self, interaction: discord.Interaction):
         if self.current_page > 0:
@@ -140,10 +134,14 @@ class Tryout(commands.Cog, name="tryout"):
         self.bot.guild_id = None  # To store the guild ID for easy access
 
     async def cog_load(self):
+        """
+        Initializes the database manager.
+        """
         self.db = self.bot.database
         if not self.db:
+            self.bot.logger.error("DatabaseManager is not initialized in the bot.")
             raise ValueError("DatabaseManager is not initialized in the bot.")
-        logger.info("Tryout Cog loaded successfully.")
+        self.bot.logger.info("Tryout Cog loaded successfully.")
 
     async def fetch_all_roblox_groups(self, session, roblox_url):
         all_groups = []
@@ -154,7 +152,7 @@ class Tryout(commands.Cog, name="tryout"):
                 url += f"?cursor={cursor}"
             async with session.get(url) as response:
                 if response.status != 200:
-                    logger.error(f"Roblox API returned status {response.status}")
+                    self.bot.logger.error(f"Roblox API returned status {response.status}")
                     break
                 data = await response.json()
                 all_groups.extend(data.get("data", []))
@@ -190,7 +188,7 @@ class Tryout(commands.Cog, name="tryout"):
                 color=0xFF0000,
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
-            logger.warning(f"Tryout command used without required roles in guild ID {guild_id}.")
+            self.bot.logger.warning(f"Tryout command used without required roles in guild ID {guild_id}.")
             return
 
         # Check if the user has any of the required roles
@@ -202,7 +200,7 @@ class Tryout(commands.Cog, name="tryout"):
                 color=0xFF0000,
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
-            logger.warning(f"User {interaction.user} lacks required roles for tryout in guild ID {guild_id}.")
+            self.bot.logger.warning(f"User {interaction.user} lacks required roles for tryout in guild ID {guild_id}.")
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -216,7 +214,7 @@ class Tryout(commands.Cog, name="tryout"):
                 color=0xFF0000,
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
-            logger.warning(f"Tryout channel not configured in guild ID {guild_id}.")
+            self.bot.logger.warning(f"Tryout channel not configured in guild ID {guild_id}.")
             return
 
         async with aiohttp.ClientSession() as session:
@@ -236,7 +234,7 @@ class Tryout(commands.Cog, name="tryout"):
                         color=0xFF0000,
                     )
                     await interaction.followup.send(embed=embed, ephemeral=True)
-                    logger.error(f"Bloxlink API error for user ID {user_id} in guild ID {guild_id}.")
+                    self.bot.logger.error(f"Bloxlink API error for user ID {user_id} in guild ID {guild_id}.")
                     return
 
                 roblox_user_id = bloxlink_data["robloxID"]
@@ -252,7 +250,7 @@ class Tryout(commands.Cog, name="tryout"):
                         color=0xFF0000,
                     )
                     await interaction.followup.send(embed=embed, ephemeral=True)
-                    logger.info(f"User {interaction.user} is not in any Roblox groups.")
+                    self.bot.logger.info(f"User {interaction.user} is not in any Roblox groups.")
                     return
 
                 # Fetch group settings from the database
@@ -264,7 +262,7 @@ class Tryout(commands.Cog, name="tryout"):
                         color=0xFF0000,
                     )
                     await interaction.followup.send(embed=embed, ephemeral=True)
-                    logger.warning(f"No tryout groups configured in guild ID {guild_id}.")
+                    self.bot.logger.warning(f"No tryout groups configured in guild ID {guild_id}.")
                     return
 
                 # Convert tryout_groups to a dictionary
@@ -290,7 +288,7 @@ class Tryout(commands.Cog, name="tryout"):
                         color=0xFF0000,
                     )
                     await interaction.followup.send(embed=embed, ephemeral=True)
-                    logger.info(f"No matching Roblox groups found for user ID {roblox_user_id} in guild ID {guild_id}.")
+                    self.bot.logger.info(f"No matching Roblox groups found for user ID {roblox_user_id} in guild ID {guild_id}.")
                     return
 
                 # If only one matching group, proceed directly
@@ -300,7 +298,7 @@ class Tryout(commands.Cog, name="tryout"):
 
                     # Calculate lock time as Unix timestamp using discord.utils.utcnow()
                     lock_timestamp = discord.utils.utcnow() + timedelta(minutes=lock_time)
-                    lock_unix = int(lock_timestamp.replace(tzinfo=discord.utils.utcnow().tzinfo).timestamp())
+                    lock_unix = int(lock_timestamp.timestamp())
                     lock_time_formatted = f"<t:{lock_unix}:R>"
 
                     cohost_mention = cohost.mention if cohost else "N/A"
@@ -344,7 +342,7 @@ class Tryout(commands.Cog, name="tryout"):
                             color=0x00FF00,
                         )
                         await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
-                        logger.info(f"Tryout announcement for '{group_info['event_name']}' sent by {interaction.user} in guild ID {guild_id}.")
+                        self.bot.logger.info(f"Tryout announcement for '{group_info['event_name']}' sent by {interaction.user} in guild ID {guild_id}.")
                     else:
                         error_embed = discord.Embed(
                             title="Error",
@@ -352,7 +350,7 @@ class Tryout(commands.Cog, name="tryout"):
                             color=0xFF0000,
                         )
                         await interaction.followup.send(embed=error_embed, ephemeral=True)
-                        logger.error(f"Channel ID {channel_id} not found in guild ID {guild_id}.")
+                        self.bot.logger.error(f"Channel ID {channel_id} not found in guild ID {guild_id}.")
                 else:
                     # If multiple groups, show a paginated dropdown for selection
                     embed = discord.Embed(
@@ -368,13 +366,14 @@ class Tryout(commands.Cog, name="tryout"):
                         group_settings,
                         channel_id,
                         self.bot,
-                        roblox_user_id
+                        roblox_user_id,
+                        settings_cog=self  # Pass the cog instance
                     )
-                    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-                    logger.info(f"Paginated selection for tryout groups sent to {interaction.user} in guild ID {guild_id}.")
+                    view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                    self.bot.logger.info(f"Paginated selection for tryout groups sent to {interaction.user} in guild ID {guild_id}.")
 
             except Exception as e:
-                logger.error(f"Error in tryout command: {e}")
+                self.bot.logger.error(f"Error in tryout command: {e}")
                 error_embed = discord.Embed(
                     title="Unexpected Error",
                     description="An unexpected error occurred.",
