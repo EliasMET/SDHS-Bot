@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS `server_settings` (
   `automod_logging_enabled` INTEGER NOT NULL DEFAULT 0,
   `automod_log_channel_id` VARCHAR(20),
   `tryout_channel_id` VARCHAR(20),
-  `mod_log_channel_id` VARCHAR(20) -- New Column for Moderation Log Channel
+  `mod_log_channel_id` VARCHAR(20) -- Existing Column for Moderation Log Channel
 );
 
 CREATE TABLE IF NOT EXISTS `tryout_groups` (
@@ -47,7 +47,15 @@ CREATE TABLE IF NOT EXISTS `moderation_allowed_roles` (
 );
 
 CREATE TABLE IF NOT EXISTS locked_channels (
-    `server_id` TEXT,
-    `channel_id` TEXT,
+    `server_id` TEXT NOT NULL,
+    `channel_id` TEXT NOT NULL,
     PRIMARY KEY (server_id, channel_id)
+);
+
+-- New Table for Ping Roles (Under Tryouts)
+
+CREATE TABLE IF NOT EXISTS `ping_roles` (
+    `server_id` VARCHAR(20) NOT NULL,
+    `role_id` VARCHAR(20) NOT NULL,
+    PRIMARY KEY (server_id, role_id)
 );

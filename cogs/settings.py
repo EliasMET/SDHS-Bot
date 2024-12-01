@@ -134,7 +134,7 @@ class Settings(commands.Cog, name="settings"):
 
     async def create_tryout_settings_embed(self, guild):
         """
-        Creates an embed for Tryout settings.
+        Creates an embed for Tryout settings, including Ping Roles.
         """
         # Fetch tryout settings from the database
         tryout_channel_id = await self.db.get_tryout_channel_id(guild.id)
@@ -153,6 +153,14 @@ class Settings(commands.Cog, name="settings"):
         else:
             groups_display = "No groups configured."
 
+        # Fetch Ping Roles
+        ping_roles = await self.db.get_ping_roles(guild.id)
+        if ping_roles:
+            ping_role_mentions = [f"<@&{role_id}>" for role_id in ping_roles]
+            ping_roles_display = ", ".join(ping_role_mentions)
+        else:
+            ping_roles_display = "No roles set."
+
         embed = discord.Embed(
             title="⚙️ Tryout Settings",
             color=discord.Color.blue(),
@@ -161,6 +169,7 @@ class Settings(commands.Cog, name="settings"):
         embed.add_field(name="Tryout Channel", value=tryout_channel, inline=False)
         embed.add_field(name="Required Roles", value=roles_display, inline=False)
         embed.add_field(name="Tryout Groups", value=groups_display, inline=False)
+        embed.add_field(name="Ping Roles", value=ping_roles_display, inline=False)
         embed.set_footer(text="Settings will timeout after 3 minutes of inactivity.")
         return embed
 
@@ -809,6 +818,22 @@ class TryoutSettingsView(discord.ui.View):
             )
         )
 
+    @discord.ui.button(label="Manage Ping Roles", style=discord.ButtonStyle.primary, emoji="📢")
+    async def manage_ping_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """
+        Opens a modal to manage ping roles.
+        """
+        await interaction.response.send_modal(
+            BaseRoleManagementModal(
+                db=self.db,
+                guild=self.guild,
+                update_callback=self.update_settings_message,
+                add_method=self.db.add_ping_role,
+                remove_method=self.db.remove_ping_role,
+                success_title="Ping Roles Updated"
+            )
+        )
+
     async def update_settings_message(self):
         """
         Updates the embed message to reflect the current Tryout settings.
@@ -833,4 +858,3 @@ class TryoutSettingsView(discord.ui.View):
 # Setup function to add the cog
 async def setup(bot):
     await bot.add_cog(Settings(bot))
-

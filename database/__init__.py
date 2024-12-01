@@ -26,6 +26,7 @@ class DatabaseManager:
                     automod_enabled INTEGER NOT NULL DEFAULT 1,
                     automod_logging_enabled INTEGER NOT NULL DEFAULT 0,
                     automod_log_channel_id TEXT,
+                    tryout_channel_id TEXT,
                     mod_log_channel_id TEXT
                 );
             """)
@@ -59,17 +60,25 @@ class DatabaseManager:
 
             await self.connection.execute("""
                 CREATE TABLE IF NOT EXISTS tryout_settings (
-                    server_id TEXT PRIMARY KEY,
+                    server_id TEXT NOT NULL PRIMARY KEY,
                     tryout_channel_id TEXT
                 );
             """)
 
-            # Create locked_channels table
             await self.connection.execute("""
                 CREATE TABLE IF NOT EXISTS locked_channels (
                     server_id TEXT NOT NULL,
                     channel_id TEXT NOT NULL,
                     PRIMARY KEY (server_id, channel_id)
+                );
+            """)
+
+            # New Table for Ping Roles (Under Tryouts)
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS ping_roles (
+                    server_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    PRIMARY KEY (server_id, role_id)
                 );
             """)
 
@@ -221,7 +230,7 @@ class DatabaseManager:
         """
         try:
             await self.connection.execute(
-                "INSERT OR IGNORE INTO server_settings (server_id, automod_enabled, automod_logging_enabled, automod_log_channel_id, mod_log_channel_id) VALUES (?, 1, 0, NULL, NULL)",
+                "INSERT OR IGNORE INTO server_settings (server_id, automod_enabled, automod_logging_enabled, automod_log_channel_id, tryout_channel_id, mod_log_channel_id) VALUES (?, 1, 0, NULL, NULL, NULL)",
                 (str(server_id),)
             )
             await self.connection.commit()
@@ -237,7 +246,7 @@ class DatabaseManager:
         """
         try:
             async with self.connection.execute(
-                "SELECT automod_enabled, automod_logging_enabled, automod_log_channel_id, mod_log_channel_id FROM server_settings WHERE server_id=?",
+                "SELECT automod_enabled, automod_logging_enabled, automod_log_channel_id, tryout_channel_id, mod_log_channel_id FROM server_settings WHERE server_id=?",
                 (str(server_id),)
             ) as cursor:
                 result = await cursor.fetchone()
@@ -246,7 +255,8 @@ class DatabaseManager:
                         'automod_enabled': bool(result[0]),
                         'automod_logging_enabled': bool(result[1]),
                         'automod_log_channel_id': int(result[2]) if result[2] else None,
-                        'mod_log_channel_id': int(result[3]) if result[3] else None
+                        'tryout_channel_id': int(result[3]) if result[3] else None,
+                        'mod_log_channel_id': int(result[4]) if result[4] else None
                     }
                 else:
                     # Initialize settings if they do not exist
@@ -255,6 +265,7 @@ class DatabaseManager:
                         'automod_enabled': True,
                         'automod_logging_enabled': False,
                         'automod_log_channel_id': None,
+                        'tryout_channel_id': None,
                         'mod_log_channel_id': None
                     }
         except Exception as e:
@@ -573,77 +584,60 @@ class DatabaseManager:
             raise RuntimeError(f"Failed to set tryout channel: {e}")
 
     # ---------------------------
-    # Methods for Locked Channels
+    # Methods for Ping Roles (Under Tryouts)
     # ---------------------------
 
-    async def is_channel_locked(self, server_id: int, channel_id: int) -> bool:
+    async def get_ping_roles(self, server_id: int) -> list:
         """
-        Checks if a specific channel in a server is locked.
+        Retrieves all ping roles for a server.
 
         :param server_id: ID of the server.
-        :param channel_id: ID of the channel.
-        :return: True if the channel is locked, False otherwise.
+        :return: List of role IDs.
         """
         try:
             async with self.connection.execute(
-                "SELECT 1 FROM locked_channels WHERE server_id = ? AND channel_id = ?",
-                (str(server_id), str(channel_id))
+                "SELECT role_id FROM ping_roles WHERE server_id = ?",
+                (str(server_id),)
             ) as cursor:
-                return await cursor.fetchone() is not None
+                roles = await cursor.fetchall()
+                return [int(role[0]) for role in roles]
         except Exception as e:
-            raise RuntimeError(f"Failed to check if channel is locked: {e}")
+            raise RuntimeError(f"Failed to get ping roles: {e}")
 
-    async def lock_channel_in_db(self, server_id: int, channel_id: int):
+    async def add_ping_role(self, server_id: int, role_id: int):
         """
-        Locks a specific channel in a server by adding it to the locked_channels table.
+        Adds a role to the list of ping roles for a server.
 
         :param server_id: ID of the server.
-        :param channel_id: ID of the channel to lock.
+        :param role_id: ID of the role to add.
         """
         try:
             await self.connection.execute(
-                "INSERT INTO locked_channels (server_id, channel_id) VALUES (?, ?)",
-                (str(server_id), str(channel_id))
+                "INSERT INTO ping_roles (server_id, role_id) VALUES (?, ?)",
+                (str(server_id), str(role_id))
             )
             await self.connection.commit()
         except aiosqlite.IntegrityError:
-            # Channel is already locked; no action needed
+            # Role already exists; ignore or handle as needed
             pass
         except Exception as e:
-            raise RuntimeError(f"Failed to lock channel: {e}")
+            raise RuntimeError(f"Failed to add ping role: {e}")
 
-    async def unlock_channel_in_db(self, server_id: int, channel_id: int):
+    async def remove_ping_role(self, server_id: int, role_id: int):
         """
-        Unlocks a specific channel in a server by removing it from the locked_channels table.
+        Removes a role from the list of ping roles for a server.
 
         :param server_id: ID of the server.
-        :param channel_id: ID of the channel to unlock.
+        :param role_id: ID of the role to remove.
         """
         try:
             await self.connection.execute(
-                "DELETE FROM locked_channels WHERE server_id = ? AND channel_id = ?",
-                (str(server_id), str(channel_id))
+                "DELETE FROM ping_roles WHERE server_id = ? AND role_id = ?",
+                (str(server_id), str(role_id))
             )
             await self.connection.commit()
         except Exception as e:
-            raise RuntimeError(f"Failed to unlock channel: {e}")
-
-    async def get_locked_channels(self, server_id: int) -> list:
-        """
-        Retrieves all locked channels for a specific server.
-
-        :param server_id: ID of the server.
-        :return: List of channel IDs that are locked.
-        """
-        try:
-            async with self.connection.execute(
-                "SELECT channel_id FROM locked_channels WHERE server_id = ?",
-                (str(server_id),)
-            ) as cursor:
-                rows = await cursor.fetchall()
-                return [int(row[0]) for row in rows]
-        except Exception as e:
-            raise RuntimeError(f"Failed to retrieve locked channels: {e}")
+            raise RuntimeError(f"Failed to remove ping role: {e}")
 
     # ---------------------------
     # Additional Utility Methods (Optional)

@@ -72,14 +72,26 @@ class PaginatedDropdownView(discord.ui.View):
 
         cohost_mention = self.cohost.mention if self.cohost else "N/A"
 
+        # Fetch Ping Roles
+        ping_roles = await self.bot.database.get_ping_roles(self.bot.guild_id)
+        if ping_roles:
+            ping_role_mentions = [f"<@&{role_id}>" for role_id in ping_roles]
+            ping_roles_display = ", ".join(ping_role_mentions)
+            ping_roles_text = " ".join(ping_role_mentions)
+        else:
+            ping_roles_display = "No roles set."
+            ping_roles_text = ""
+
         # Build the plain text message for the tryout announcement with Roblox profile link
         tryout_message = (
+            f"{ping_roles_text}\n"  # Ping the roles
             f"**[HOST]** {self.user.mention}\n\n"
             f"**[CO-HOST]** {cohost_mention}\n\n"
             f"**[EVENT]** {group_info['event_name']}\n\n"
             f"**[DESCRIPTION]** {group_info['description']}\n\n"
             f"**[LINK]** https://www.roblox.com/users/{self.roblox_user_id}/profile\n\n"
             f"**[LOCKS]** {lock_time_formatted}\n\n"
+            f"**[PINGS]** {ping_roles_display}\n\n"  # Added PINGS section
             f"**[REQUIREMENTS]**\n\n"
             f"• Account age of 100+ Days\n\n"
             f"• No Safechat\n\n"
@@ -99,6 +111,7 @@ class PaginatedDropdownView(discord.ui.View):
                 color=0x00FF00,
             )
             await interaction.followup.edit_message(message_id=interaction.message.id, embed=confirmation_embed, view=None)
+            logger.info(f"Tryout announcement for '{group_info['event_name']}' sent by {self.user} in guild ID {self.bot.guild_id}.")
         else:
             error_embed = discord.Embed(
                 title="Error",
@@ -106,6 +119,7 @@ class PaginatedDropdownView(discord.ui.View):
                 color=0xFF0000,
             )
             await interaction.followup.edit_message(message_id=interaction.message.id, embed=error_embed, view=None)
+            logger.error(f"Channel ID {self.channel_id} not found in guild ID {self.bot.guild_id}.")
 
     async def prev_page(self, interaction: discord.Interaction):
         if self.current_page > 0:
@@ -123,11 +137,13 @@ class Tryout(commands.Cog, name="tryout"):
     def __init__(self, bot) -> None:
         self.bot = bot
         self.db = None
+        self.bot.guild_id = None  # To store the guild ID for easy access
 
     async def cog_load(self):
         self.db = self.bot.database
         if not self.db:
             raise ValueError("DatabaseManager is not initialized in the bot.")
+        logger.info("Tryout Cog loaded successfully.")
 
     async def fetch_all_roblox_groups(self, session, roblox_url):
         all_groups = []
@@ -163,6 +179,7 @@ class Tryout(commands.Cog, name="tryout"):
     ) -> None:
         bloxlink_api_key = os.getenv("BLOXLINK_TOKEN")
         guild_id = interaction.guild.id
+        self.bot.guild_id = guild_id  # Store guild ID for easy access in views
 
         # Fetch required roles from the database
         required_roles = await self.db.get_tryout_required_roles(interaction.guild.id)
@@ -173,6 +190,7 @@ class Tryout(commands.Cog, name="tryout"):
                 color=0xFF0000,
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
+            logger.warning(f"Tryout command used without required roles in guild ID {guild_id}.")
             return
 
         # Check if the user has any of the required roles
@@ -184,6 +202,7 @@ class Tryout(commands.Cog, name="tryout"):
                 color=0xFF0000,
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
+            logger.warning(f"User {interaction.user} lacks required roles for tryout in guild ID {guild_id}.")
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -197,6 +216,7 @@ class Tryout(commands.Cog, name="tryout"):
                 color=0xFF0000,
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
+            logger.warning(f"Tryout channel not configured in guild ID {guild_id}.")
             return
 
         async with aiohttp.ClientSession() as session:
@@ -216,6 +236,7 @@ class Tryout(commands.Cog, name="tryout"):
                         color=0xFF0000,
                     )
                     await interaction.followup.send(embed=embed, ephemeral=True)
+                    logger.error(f"Bloxlink API error for user ID {user_id} in guild ID {guild_id}.")
                     return
 
                 roblox_user_id = bloxlink_data["robloxID"]
@@ -231,6 +252,7 @@ class Tryout(commands.Cog, name="tryout"):
                         color=0xFF0000,
                     )
                     await interaction.followup.send(embed=embed, ephemeral=True)
+                    logger.info(f"User {interaction.user} is not in any Roblox groups.")
                     return
 
                 # Fetch group settings from the database
@@ -242,6 +264,7 @@ class Tryout(commands.Cog, name="tryout"):
                         color=0xFF0000,
                     )
                     await interaction.followup.send(embed=embed, ephemeral=True)
+                    logger.warning(f"No tryout groups configured in guild ID {guild_id}.")
                     return
 
                 # Convert tryout_groups to a dictionary
@@ -267,6 +290,7 @@ class Tryout(commands.Cog, name="tryout"):
                         color=0xFF0000,
                     )
                     await interaction.followup.send(embed=embed, ephemeral=True)
+                    logger.info(f"No matching Roblox groups found for user ID {roblox_user_id} in guild ID {guild_id}.")
                     return
 
                 # If only one matching group, proceed directly
@@ -281,14 +305,26 @@ class Tryout(commands.Cog, name="tryout"):
 
                     cohost_mention = cohost.mention if cohost else "N/A"
 
+                    # Fetch Ping Roles
+                    ping_roles = await self.db.get_ping_roles(interaction.guild.id)
+                    if ping_roles:
+                        ping_role_mentions = [f"<@&{role_id}>" for role_id in ping_roles]
+                        ping_roles_display = ", ".join(ping_role_mentions)
+                        ping_roles_text = " ".join(ping_role_mentions)
+                    else:
+                        ping_roles_display = "No roles set."
+                        ping_roles_text = ""
+
                     # Build the plain text message for the tryout announcement with Roblox profile link
                     tryout_message = (
+                        f"{ping_roles_text}\n"  # Ping the roles
                         f"**[HOST]** {interaction.user.mention}\n\n"
                         f"**[CO-HOST]** {cohost_mention}\n\n"
                         f"**[EVENT]** {group_info['event_name']}\n\n"
                         f"**[DESCRIPTION]** {group_info['description']}\n\n"
                         f"**[LINK]** https://www.roblox.com/users/{roblox_user_id}/profile\n\n"
                         f"**[LOCKS]** {lock_time_formatted}\n\n"
+                        f"**[PINGS]** {ping_roles_display}\n\n"  # Added PINGS section
                         f"**[REQUIREMENTS]**\n\n"
                         f"• Account age of 100+ Days\n\n"
                         f"• No Safechat\n\n"
@@ -308,6 +344,7 @@ class Tryout(commands.Cog, name="tryout"):
                             color=0x00FF00,
                         )
                         await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
+                        logger.info(f"Tryout announcement for '{group_info['event_name']}' sent by {interaction.user} in guild ID {guild_id}.")
                     else:
                         error_embed = discord.Embed(
                             title="Error",
@@ -315,6 +352,7 @@ class Tryout(commands.Cog, name="tryout"):
                             color=0xFF0000,
                         )
                         await interaction.followup.send(embed=error_embed, ephemeral=True)
+                        logger.error(f"Channel ID {channel_id} not found in guild ID {guild_id}.")
                 else:
                     # If multiple groups, show a paginated dropdown for selection
                     embed = discord.Embed(
@@ -333,6 +371,7 @@ class Tryout(commands.Cog, name="tryout"):
                         roblox_user_id
                     )
                     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                    logger.info(f"Paginated selection for tryout groups sent to {interaction.user} in guild ID {guild_id}.")
 
             except Exception as e:
                 logger.error(f"Error in tryout command: {e}")
@@ -343,6 +382,6 @@ class Tryout(commands.Cog, name="tryout"):
                 )
                 await interaction.followup.send(embed=error_embed, ephemeral=True)
 
-# Setup function
+# Setup function to add the cog (Asynchronous)
 async def setup(bot) -> None:
     await bot.add_cog(Tryout(bot))
