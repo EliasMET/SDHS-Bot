@@ -4,6 +4,7 @@ from discord import app_commands
 from discord.ext import commands
 from datetime import timedelta
 import logging
+import os
 
 # Logger setup
 logger = logging.getLogger("TryoutCog")
@@ -13,7 +14,7 @@ handler.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)
 logger.addHandler(handler)
 
 class PaginatedDropdownView(discord.ui.View):
-    def __init__(self, groups, user, cohost, lock_time, group_settings, channel_id, bot, per_page=25):
+    def __init__(self, groups, user, cohost, lock_time, group_settings, channel_id, bot, roblox_user_id, per_page=25):
         super().__init__(timeout=180)  # Set a timeout for the view
         self.groups = list(groups.items())
         self.user = user
@@ -25,6 +26,7 @@ class PaginatedDropdownView(discord.ui.View):
         self.per_page = per_page
         self.current_page = 0
         self.total_pages = (len(self.groups) - 1) // per_page + 1
+        self.roblox_user_id = roblox_user_id
 
         # Initialize Select menu
         self.select = discord.ui.Select(
@@ -70,13 +72,13 @@ class PaginatedDropdownView(discord.ui.View):
 
         cohost_mention = self.cohost.mention if self.cohost else "N/A"
 
-        # Build the plain text message for the tryout announcement
+        # Build the plain text message for the tryout announcement with Roblox profile link
         tryout_message = (
             f"**[HOST]** {self.user.mention}\n"
             f"**[CO-HOST]** {cohost_mention}\n"
             f"**[EVENT]** {group_info['event_name']}\n"
             f"**[DESCRIPTION]** {group_info['description']}\n"
-            f"**[LINK]** {group_info['link']}\n"
+            f"**[LINK]** https://www.roblox.com/users/{self.roblox_user_id}/profile\n"
             f"**[LOCKS]** {lock_time_formatted}\n"
             f"**[REQUIREMENTS]**\n\n"
             f"• Account age of 100+ Days\n\n"
@@ -159,7 +161,7 @@ class Tryout(commands.Cog, name="tryout"):
         cohost: discord.Member = None,
         lock_time: int = 10,
     ) -> None:
-        bloxlink_api_key = "8cbcf282-fff9-4c34-b13b-b3e0a85aebe3"  # Replace with your actual Bloxlink API key
+        bloxlink_api_key = os.getenv("BLOXLINK_TOKEN")  # Replace with your actual Bloxlink API key
         guild_id = interaction.guild.id  # Get the server's guild ID
 
         # Fetch required roles from the database
@@ -279,13 +281,13 @@ class Tryout(commands.Cog, name="tryout"):
 
                     cohost_mention = cohost.mention if cohost else "N/A"
 
-                    # Build the plain text message for the tryout announcement
+                    # Build the plain text message for the tryout announcement with Roblox profile link
                     tryout_message = (
                         f"**[HOST]** {interaction.user.mention}\n\n"
                         f"**[CO-HOST]** {cohost_mention}\n\n"
                         f"**[EVENT]** {group_info['event_name']}\n\n"
                         f"**[DESCRIPTION]** {group_info['description']}\n\n"
-                        f"**[LINK]** {group_info['link']}\n\n"
+                        f"**[LINK]** https://www.roblox.com/users/{roblox_user_id}/profile\n\n"
                         f"**[LOCKS]** {lock_time_formatted}\n\n"
                         f"**[REQUIREMENTS]**\n\n"
                         f"• Account age of 100+ Days\n\n"
@@ -327,7 +329,8 @@ class Tryout(commands.Cog, name="tryout"):
                         lock_time,
                         group_settings,
                         channel_id,
-                        self.bot
+                        self.bot,
+                        roblox_user_id
                     )
                     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
