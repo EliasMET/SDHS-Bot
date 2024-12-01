@@ -74,12 +74,12 @@ class PaginatedDropdownView(discord.ui.View):
 
         # Build the plain text message for the tryout announcement with Roblox profile link
         tryout_message = (
-            f"**[HOST]** {self.user.mention}\n"
-            f"**[CO-HOST]** {cohost_mention}\n"
-            f"**[EVENT]** {group_info['event_name']}\n"
-            f"**[DESCRIPTION]** {group_info['description']}\n"
-            f"**[LINK]** https://www.roblox.com/users/{self.roblox_user_id}/profile\n"
-            f"**[LOCKS]** {lock_time_formatted}\n"
+            f"**[HOST]** {self.user.mention}\n\n"
+            f"**[CO-HOST]** {cohost_mention}\n\n"
+            f"**[EVENT]** {group_info['event_name']}\n\n"
+            f"**[DESCRIPTION]** {group_info['description']}\n\n"
+            f"**[LINK]** https://www.roblox.com/users/{self.roblox_user_id}/profile\n\n"
+            f"**[LOCKS]** {lock_time_formatted}\n\n"
             f"**[REQUIREMENTS]**\n\n"
             f"• Account age of 100+ Days\n\n"
             f"• No Safechat\n\n"
@@ -161,8 +161,8 @@ class Tryout(commands.Cog, name="tryout"):
         cohost: discord.Member = None,
         lock_time: int = 10,
     ) -> None:
-        bloxlink_api_key = os.getenv("BLOXLINK_TOKEN")  # Replace with your actual Bloxlink API key
-        guild_id = interaction.guild.id  # Get the server's guild ID
+        bloxlink_api_key = os.getenv("BLOXLINK_TOKEN")
+        guild_id = interaction.guild.id
 
         # Fetch required roles from the database
         required_roles = await self.db.get_tryout_required_roles(interaction.guild.id)
