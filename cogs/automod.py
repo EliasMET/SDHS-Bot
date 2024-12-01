@@ -3,7 +3,6 @@ from discord.ext import commands, tasks
 from discord import app_commands
 
 import re
-import logging
 from datetime import datetime, timedelta
 import math
 import aiohttp
@@ -11,16 +10,11 @@ import asyncio
 
 # Define the check function outside the class for command permissions
 async def is_admin_or_owner(interaction: discord.Interaction) -> bool:
-    # Access bot via interaction.client
     bot = interaction.client
-    # Check if owner_id is cached
     if not hasattr(bot, 'owner_id'):
         app_info = await bot.application_info()
         bot.owner_id = app_info.owner.id
-    bot_owner_id = bot.owner_id
-    if interaction.user.id == bot_owner_id:
-        return True
-    if interaction.user.guild_permissions.administrator:
+    if interaction.user.id == bot.owner_id or interaction.user.guild_permissions.administrator:
         return True
     raise app_commands.MissingPermissions(['administrator'])
 
@@ -33,18 +27,13 @@ class WarningsView(discord.ui.View):
         self.current_page = 0
         self.total_pages = math.ceil(len(warnings) / per_page)
 
-        self.previous_button = discord.ui.Button(label="Previous", style=discord.ButtonStyle.blurple)
-        self.next_button = discord.ui.Button(label="Next", style=discord.ButtonStyle.blurple)
+        self.previous_button = discord.ui.Button(label="Previous", style=discord.ButtonStyle.blurple, disabled=True)
+        self.next_button = discord.ui.Button(label="Next", style=discord.ButtonStyle.blurple, disabled=(self.total_pages <= 1))
         self.previous_button.callback = self.previous_page
         self.next_button.callback = self.next_page
 
         self.add_item(self.previous_button)
         self.add_item(self.next_button)
-        self.update_buttons()
-
-    def update_buttons(self):
-        self.previous_button.disabled = self.current_page == 0
-        self.next_button.disabled = self.current_page >= self.total_pages - 1
 
     def create_embed(self):
         start = self.current_page * self.per_page
@@ -80,12 +69,16 @@ class WarningsView(discord.ui.View):
             embed = self.create_embed()
             await interaction.response.edit_message(embed=embed, view=self)
 
+    def update_buttons(self):
+        self.previous_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page >= self.total_pages - 1
+
 class AutoMod(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = None  # Placeholder for the database manager instance
 
-        # Patterns for auto-moderation
+        # Compile regex patterns for performance
         self.roblox_group_regex = re.compile(
             r"https?://www\.roblox\.com/communities/\d+/[a-zA-Z0-9\-]+",
             re.IGNORECASE
@@ -94,10 +87,10 @@ class AutoMod(commands.Cog):
             r"(https?://)?(www\.)?(discord\.(gg|io|me|li)|discordapp\.com/invite)/[a-zA-Z0-9]+",
             re.IGNORECASE
         )
-        self.profanity_list = []  # Will be loaded asynchronously
-        self.profanity_pattern = None  # Will be set after loading
+        self.profanity_list = []
+        self.profanity_pattern = None
 
-        # Start the tasks
+        # Start background tasks
         self.expire_warnings_task.start()
         self.load_profanity_list_task.start()
 
@@ -106,7 +99,7 @@ class AutoMod(commands.Cog):
         if not self.db:
             raise ValueError("DatabaseManager is not initialized in the bot.")
 
-        # Ensure owner_id is cached
+        # Cache owner_id
         if not hasattr(self.bot, 'owner_id'):
             app_info = await self.bot.application_info()
             self.bot.owner_id = app_info.owner.id
@@ -117,7 +110,7 @@ class AutoMod(commands.Cog):
 
     async def handle_message_violation(self, message: discord.Message, reason: str):
         try:
-            # Delete the violating message instantly
+            # Delete the violating message
             await message.delete()
 
             # Log the violation to the database
@@ -128,7 +121,7 @@ class AutoMod(commands.Cog):
                 reason=reason,
             )
 
-            # Send a plain warning message
+            # Send a warning message to the user
             warning_msg = (
                 f"{message.author.mention}, your message violated the server rules.\n"
                 f"**Reason:** {reason}"
@@ -141,17 +134,17 @@ class AutoMod(commands.Cog):
             )
 
             # Apply timeouts based on warning count
-            if warning_count == 3:
-                timeout_duration = timedelta(minutes=10)
-                await message.author.timeout(timeout_duration, reason="Reached 3 warnings")
+            timeout_actions = {
+                3: timedelta(minutes=10),
+                6: timedelta(hours=24)
+            }
+
+            if warning_count in timeout_actions:
+                duration = timeout_actions[warning_count]
+                await message.author.timeout(duration, reason=f"Reached {warning_count} warnings")
+                duration_str = f"{duration.total_seconds() / 60} minutes" if warning_count == 3 else "24 hours"
                 await message.channel.send(
-                    f"🚫 {message.author.mention} has been timed out for 10 minutes due to accumulating 3 warnings."
-                )
-            elif warning_count == 6:
-                timeout_duration = timedelta(hours=24)
-                await message.author.timeout(timeout_duration, reason="Reached 6 warnings")
-                await message.channel.send(
-                    f"🚫 {message.author.mention} has been timed out for 24 hours due to accumulating 6 warnings."
+                    f"🚫 {message.author.mention} has been timed out for {duration_str} due to accumulating {warning_count} warnings."
                 )
 
             # Delete the moderation message after 10 seconds
@@ -173,7 +166,8 @@ class AutoMod(commands.Cog):
                         log_embed.add_field(name="User", value=message.author.mention, inline=True)
                         log_embed.add_field(name="Action", value=reason, inline=True)
                         log_embed.add_field(name="Channel", value=message.channel.mention, inline=True)
-                        log_embed.set_footer(text=f"User ID: {message.author.id}")
+                        log_embed.add_field(name="Message", value=f"||{message.content}||", inline=False)
+                        log_embed.set_footer(text=f"User ID: {message.author.id} | Warn ID: {warn_id}")
                         await log_channel.send(embed=log_embed)
         except Exception as e:
             self.bot.logger.error(f"Failed to handle message violation: {e}")
@@ -208,7 +202,6 @@ class AutoMod(commands.Cog):
         :param message: The message to check.
         :return: True if the user should bypass automod, False otherwise.
         """
-        # Ensure owner_id is cached
         if not hasattr(self.bot, 'owner_id'):
             try:
                 app_info = await self.bot.application_info()
@@ -217,21 +210,14 @@ class AutoMod(commands.Cog):
                 self.bot.logger.error(f"Failed to fetch application info: {e}")
                 return False  # Default to not bypass
 
-        if message.author.id == self.bot.owner_id:
-            return True
-        if message.author.guild_permissions.administrator:
-            return True
-        return False
+        return message.author.id == self.bot.owner_id or message.author.guild_permissions.administrator
 
     @tasks.loop(minutes=5)
     async def expire_warnings_task(self):
         """Task to expire warnings older than 1 hour."""
         try:
-            expiration_timestamp = int((datetime.now() - timedelta(hours=1)).timestamp())
-            # Remove expired warnings directly
+            expiration_timestamp = int((datetime.utcnow() - timedelta(hours=1)).timestamp())
             await self.db.remove_expired_warnings(expiration_timestamp)
-            # Removed the log line that was printing to the console
-            # self.bot.logger.info(f"Expired warnings older than {expiration_timestamp}.")
         except Exception as e:
             self.bot.logger.error(f"Error in warning expiration task: {e}")
 
@@ -259,7 +245,6 @@ class AutoMod(commands.Cog):
     @app_commands.describe(user="The user to view warnings for.")
     @app_commands.check(is_admin_or_owner)
     async def warns(self, interaction: discord.Interaction, user: discord.Member):
-        # Use the thinking function
         await interaction.response.defer(ephemeral=True)
 
         warnings = await self.db.get_warnings(user_id=user.id, server_id=interaction.guild.id)
@@ -296,7 +281,6 @@ class AutoMod(commands.Cog):
     @app_commands.describe(user="The user to clear warnings for.")
     @app_commands.check(is_admin_or_owner)
     async def clearwarnings(self, interaction: discord.Interaction, user: discord.Member):
-        # Use the thinking function
         await interaction.response.defer(ephemeral=True)
 
         await self.db.clear_all_warnings(user_id=user.id, server_id=interaction.guild.id)
@@ -311,7 +295,6 @@ class AutoMod(commands.Cog):
     @app_commands.describe(user="The user to clear warning for.", warn_id="The ID of the warning to clear.")
     @app_commands.check(is_admin_or_owner)
     async def clearwarn(self, interaction: discord.Interaction, user: discord.Member, warn_id: int):
-        # Use the thinking function
         await interaction.response.defer(ephemeral=True)
 
         # Attempt to remove the warning
@@ -331,53 +314,26 @@ class AutoMod(commands.Cog):
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
-    # Error handlers for commands
+    # Consolidated error handler
+    async def send_missing_permissions_error(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="Missing Permissions",
+            description="You need the `Administrator` permission to use this command.",
+            color=0xFF0000,
+        )
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @warns.error
-    async def warns_error(self, interaction: discord.Interaction, error):
-        if isinstance(error, app_commands.MissingPermissions):
-            embed = discord.Embed(
-                title="Missing Permissions",
-                description="You need the `Administrator` permission to use this command.",
-                color=0xFF0000,
-            )
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-        else:
-            self.bot.logger.error(f"Error in /warns command: {error}")
-            raise error
-
     @clearwarnings.error
-    async def clearwarnings_error(self, interaction: discord.Interaction, error):
-        if isinstance(error, app_commands.MissingPermissions):
-            embed = discord.Embed(
-                title="Missing Permissions",
-                description="You need the `Administrator` permission to use this command.",
-                color=0xFF0000,
-            )
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-        else:
-            self.bot.logger.error(f"Error in /clearwarnings command: {error}")
-            raise error
-
     @clearwarn.error
-    async def clearwarn_error(self, interaction: discord.Interaction, error):
+    async def commands_error(self, interaction: discord.Interaction, error):
         if isinstance(error, app_commands.MissingPermissions):
-            embed = discord.Embed(
-                title="Missing Permissions",
-                description="You need the `Administrator` permission to use this command.",
-                color=0xFF0000,
-            )
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+            await self.send_missing_permissions_error(interaction)
         else:
-            self.bot.logger.error(f"Error in /clearwarn command: {error}")
+            self.bot.logger.error(f"Error in command {interaction.command}: {error}")
             raise error
 
 # Setup function
