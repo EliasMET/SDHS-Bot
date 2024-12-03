@@ -1,13 +1,26 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+from enum import Enum
 import asyncio
+
+# Define an Enum for static settings categories
+class SettingsCategory(Enum):
+    AUTOMOD = "automod"
+    TRYOUT = "tryout"
+    MODERATION = "moderation"
 
 class Settings(commands.Cog, name="settings"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = None  # Placeholder for the database manager instance
         self.owner_id = None  # Initialize owner_id
+        # Mapping categories to their handler functions
+        self.category_handlers = {
+            SettingsCategory.AUTOMOD.value: self.handle_automod_settings,
+            SettingsCategory.TRYOUT.value: self.handle_tryout_settings,
+            SettingsCategory.MODERATION.value: self.handle_moderation_settings
+        }
 
     async def cog_load(self):
         """
@@ -46,7 +59,12 @@ class Settings(commands.Cog, name="settings"):
 
     @app_commands.command(name="settings", description="Configure bot settings.")
     @app_commands.describe(category="The category of settings to configure.")
-    async def settings_command(self, interaction: discord.Interaction, category: str):
+    @app_commands.choices(category=[
+        app_commands.Choice(name="Automod", value=SettingsCategory.AUTOMOD.value),
+        app_commands.Choice(name="Tryout", value=SettingsCategory.TRYOUT.value),
+        app_commands.Choice(name="Moderation", value=SettingsCategory.MODERATION.value)
+    ])
+    async def settings_command(self, interaction: discord.Interaction, category: app_commands.Choice[str]):
         """
         Main command to configure bot settings based on the specified category.
         """
@@ -64,34 +82,21 @@ class Settings(commands.Cog, name="settings"):
 
         await interaction.response.defer(ephemeral=True)
 
-        category = category.lower()
-        if category == "automod":
-            await self.handle_automod_settings(interaction)
-        elif category == "tryout":
-            await self.handle_tryout_settings(interaction)
-        elif category == "moderation":
-            await self.handle_moderation_settings(interaction)
+        handler = self.category_handlers.get(category.value)
+        if handler:
+            await handler(interaction)
         else:
             embed = discord.Embed(
                 title="Invalid Category",
-                description=f"The category `{category}` is not recognized.",
+                description=f"The category `{category.value}` is not recognized.",
                 color=0xE02B2B,  # Dark red for errors
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
             self.bot.logger.warning(
-                f"User {interaction.user} (ID: {interaction.user.id}) provided an invalid category '{category}' in guild {interaction.guild.name} (ID: {interaction.guild.id})."
+                f"User {interaction.user} (ID: {interaction.user.id}) provided an invalid category '{category.value}' in guild {interaction.guild.name} (ID: {interaction.guild.id})."
             )
 
-    @settings_command.autocomplete('category')
-    async def settings_autocomplete(self, interaction: discord.Interaction, current: str):
-        """
-        Autocomplete for the 'category' parameter in the /settings command.
-        """
-        categories = ["automod", "tryout", "moderation"]
-        return [
-            app_commands.Choice(name=category.capitalize(), value=category)
-            for category in categories if current.lower() in category.lower()
-        ]
+    # Removed the autocomplete function as categories are now static and handled via choices
 
     async def handle_automod_settings(self, interaction: discord.Interaction):
         server_settings = await self.db.get_server_settings(interaction.guild.id)
