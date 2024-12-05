@@ -75,7 +75,7 @@ class WarningsView(discord.ui.View):
 
 class AutoMod(commands.Cog):
     # Define constants for the monitored user and exempt roles
-    MONITORED_USER_ID = 1036345843109875733  # The user to monitor mentions for
+    MONITORED_USER_ID = 1178294054170153010  # The user to monitor mentions for
     EXEMPT_ROLE_IDS = {1311777421049204846, 1289875864749867058}  # Roles that exempt from timeout
 
     def __init__(self, bot: commands.Bot):
