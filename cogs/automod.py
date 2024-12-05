@@ -75,7 +75,7 @@ class WarningsView(discord.ui.View):
 
 class AutoMod(commands.Cog):
     # Define constants for the monitored user and exempt roles
-    MONITORED_USER_ID = 1036345843109875733  # The user to monitor mentions for
+    MONITORED_USER_ID = 1178294054170153010  # The user to monitor mentions for
     EXEMPT_ROLE_IDS = {1311777421049204846, 1289875864749867058}  # Roles that exempt from timeout
 
     def __init__(self, bot: commands.Bot):
@@ -184,7 +184,7 @@ class AutoMod(commands.Cog):
                         log_embed.add_field(name="User", value=message.author.mention, inline=True)
                         log_embed.add_field(name="Action", value=reason, inline=True)
                         log_embed.add_field(name="Channel", value=message.channel.mention, inline=True)
-                        log_embed.add_field(name="Message", value=f"||{message.content}||", inline=False)
+                        log_embed.add_field(name="Reason", value=f"{reason}\n||{message.content}||", inline=False)  # Offending message in spoilers
                         log_embed.set_footer(text=f"User ID: {message.author.id} | Warn ID: {warn_id}")
                         await log_channel.send(embed=log_embed)
         except Exception as e:
@@ -234,7 +234,7 @@ class AutoMod(commands.Cog):
                                     log_embed.add_field(name="User", value=message.author.mention, inline=True)
                                     log_embed.add_field(name="Action", value="Mentioned Protected User Without Required Roles", inline=True)
                                     log_embed.add_field(name="Duration", value="1 Hour", inline=True)
-                                    log_embed.add_field(name="Reason", value=f"Mentioned user {self.monitored_user} without roles {self.EXEMPT_ROLE_IDS}", inline=False)
+                                    log_embed.add_field(name="Reason", value=f"||{message.content}||", inline=False)
                                     log_embed.set_footer(text=f"User ID: {message.author.id}")
                                     await log_channel.send(embed=log_embed)
 
