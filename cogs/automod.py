@@ -1,3 +1,5 @@
+# automod.py
+
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -42,14 +44,16 @@ class WarningsView(discord.ui.View):
             title=f"Warnings for {self.user}",
             color=0xFF0000,
             description=f"Page {self.current_page + 1}/{self.total_pages}",
+            timestamp=datetime.utcnow()
         )
         for warn in self.warnings[start:end]:
+            warn_id, reason, moderator_id, timestamp = warn  # Unpack the tuple
             embed.add_field(
-                name=f"Warning ID: {warn['id']}",
+                name=f"Warning ID: {warn_id}",
                 value=(
-                    f"**Reason:** {warn['reason']}\n"
-                    f"**Moderator:** <@{warn['moderator_id']}>\n"
-                    f"**Date:** <t:{int(warn['timestamp'])}:F>"
+                    f"**Reason:** {reason}\n"
+                    f"**Moderator:** <@{moderator_id}>\n"
+                    f"**Date:** <t:{int(timestamp)}:F>"
                 ),
                 inline=False,
             )
@@ -74,6 +78,14 @@ class WarningsView(discord.ui.View):
         self.next_button.disabled = self.current_page >= self.total_pages - 1
 
 class AutoMod(commands.Cog):
+    """
+    AutoMod Cog
+    Provides automated moderation features such as warning users,
+    monitoring messages for prohibited content, and handling timeouts.
+    
+    Version: 1.4.0
+    """
+
     # Define constants for the monitored user and exempt roles
     MONITORED_USER_ID = 1178294054170153010  # The user to monitor mentions for
     EXEMPT_ROLE_IDS = {1311777421049204846, 1289875864749867058}  # Roles that exempt from timeout
@@ -105,8 +117,12 @@ class AutoMod(commands.Cog):
         self.monitored_user = None
 
     async def cog_load(self):
+        """
+        Initialize the cog by setting up the database and caching owner_id.
+        """
         self.db = self.bot.database  # Access DatabaseManager from the bot instance
         if not self.db:
+            self.bot.logger.error("DatabaseManager is not initialized in the bot.")
             raise ValueError("DatabaseManager is not initialized in the bot.")
 
         # Cache owner_id
@@ -126,6 +142,10 @@ class AutoMod(commands.Cog):
         self.load_profanity_list_task.cancel()
 
     async def handle_message_violation(self, message: discord.Message, reason: str):
+        """
+        Handles violations detected by AutoMod by deleting the message,
+        issuing a warning, notifying the user, and logging the action.
+        """
         try:
             # Delete the violating message
             await message.delete()
@@ -138,7 +158,7 @@ class AutoMod(commands.Cog):
                 reason=reason,
             )
 
-            # Send a warning message to the user
+            # Send a warning message to the user in the channel
             warning_msg = (
                 f"{message.author.mention}, your message violated the server rules.\n"
                 f"**Reason:** {reason}"
@@ -165,7 +185,7 @@ class AutoMod(commands.Cog):
                 )
                 await message.channel.send(timeout_notice)
 
-            # Delete the moderation message after 10 seconds
+            # Delete the moderation message after 10 seconds to reduce clutter
             await asyncio.sleep(10)
             await moderation_message.delete()
 
@@ -192,6 +212,9 @@ class AutoMod(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        """
+        Listens to all messages and applies AutoMod checks.
+        """
         if message.author.bot:
             return
 
@@ -262,6 +285,9 @@ class AutoMod(commands.Cog):
                 self.bot.logger.error(f"Error during AutoMod checks: {e}")
 
     async def get_server_settings(self, guild_id: int):
+        """
+        Retrieves server settings from the database and caches them.
+        """
         # Check if settings are cached
         if guild_id in self.server_settings_cache:
             return self.server_settings_cache[guild_id]
@@ -308,7 +334,9 @@ class AutoMod(commands.Cog):
 
     @tasks.loop(minutes=10)
     async def expire_warnings_task(self):
-        """Task to expire warnings older than 2 days."""
+        """
+        Task to expire warnings older than 2 days.
+        """
         try:
             expiration_timestamp = int((datetime.utcnow() - timedelta(days=2)).timestamp())
             await self.db.remove_expired_warnings(expiration_timestamp)
@@ -318,7 +346,9 @@ class AutoMod(commands.Cog):
 
     @tasks.loop(count=1)
     async def load_profanity_list_task(self):
-        """Load the profanity list and compile the regex pattern."""
+        """
+        Load the profanity list and compile the regex pattern.
+        """
         url = "https://raw.githubusercontent.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/master/en"
         try:
             async with aiohttp.ClientSession() as session:
@@ -336,17 +366,155 @@ class AutoMod(commands.Cog):
         except Exception as e:
             self.bot.logger.error(f"Error loading profanity list: {e}")
 
+    @app_commands.command(name="warn", description="Issue a warning to a user.")
+    @app_commands.describe(user="The user to warn.", reason="The reason for the warning.")
+    @app_commands.check(is_admin_or_owner)
+    async def warn(self, interaction: discord.Interaction, user: discord.Member, reason: str):
+        """
+        Issues a warning to a specified user with a provided reason.
+
+        :param interaction: The command interaction.
+        :param user: The user to warn.
+        :param reason: The reason for the warning.
+        """
+        await interaction.response.defer(ephemeral=True)  # Use the thinking function
+
+        # Prevent warning the bot itself
+        if user.id == self.bot.user.id:
+            embed = discord.Embed(
+                title="⚠️ Warning Issuance Failed",
+                description="I cannot warn myself.",
+                color=0x8B0000  # Dark red
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        # Prevent warning the guild owner
+        if user.id == interaction.guild.owner_id:
+            embed = discord.Embed(
+                title="⚠️ Warning Issuance Failed",
+                description="You cannot warn the server owner.",
+                color=0x8B0000  # Dark red
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        # Prevent warning members with higher or equal roles
+        if user.top_role >= interaction.user.top_role and interaction.user != interaction.guild.owner:
+            embed = discord.Embed(
+                title="⚠️ Warning Issuance Failed",
+                description="You cannot warn a member with equal or higher roles.",
+                color=0x8B0000  # Dark red
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        try:
+            # Add the warning to the database
+            warn_id = await self.db.add_warn(
+                user_id=user.id,
+                server_id=interaction.guild.id,
+                moderator_id=interaction.user.id,
+                reason=reason,
+            )
+
+            # Send a confirmation message to the moderator
+            embed = discord.Embed(
+                title="✅ Warning Issued",
+                color=0x00FF00,  # Green
+                timestamp=datetime.utcnow()
+            )
+            embed.add_field(name="User", value=user.mention, inline=True)
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Warning ID", value=str(warn_id), inline=True)
+            embed.set_footer(text=f"Moderator: {interaction.user} (ID: {interaction.user.id})")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+            # Send a DM to the warned user
+            try:
+                dm_embed = discord.Embed(
+                    title="⚠️ You Have Been Warned",
+                    color=0xFFA500,  # Orange
+                    timestamp=datetime.utcnow()
+                )
+                dm_embed.add_field(name="Server", value=interaction.guild.name, inline=False)
+                dm_embed.add_field(name="Reason", value=reason, inline=False)
+                dm_embed.add_field(name="Warning ID", value=str(warn_id), inline=True)
+                dm_embed.set_footer(text="Please adhere to the server rules to avoid further actions.")
+                await user.send(embed=dm_embed)
+            except discord.Forbidden:
+                self.bot.logger.warning(f"Could not send DM to {user}.")
+
+            # Check if the warning count triggers any automatic actions
+            warning_count = await self.db.count_warnings(user_id=user.id, server_id=interaction.guild.id)
+            timeout_actions = {
+                3: timedelta(minutes=10),
+                6: timedelta(hours=24)
+            }
+
+            if warning_count in timeout_actions:
+                duration = timeout_actions[warning_count]
+                await user.timeout(duration, reason=f"Reached {warning_count} warnings via /warn command")
+                duration_str = f"{int(duration.total_seconds() / 60)} minutes" if warning_count == 3 else "24 hours"
+                timeout_notice = (
+                    f"🚫 {user.mention} has been timed out for {duration_str} due to accumulating {warning_count} warnings."
+                )
+                system_channel = interaction.guild.system_channel
+                if system_channel:
+                    await system_channel.send(timeout_notice)
+
+                # Log the timeout action if logging is enabled
+                server_settings = await self.get_server_settings(interaction.guild.id)
+                if server_settings.get('automod_logging_enabled'):
+                    log_channel_id = server_settings.get('automod_log_channel_id')
+                    if log_channel_id:
+                        log_channel = interaction.guild.get_channel(int(log_channel_id))
+                        if log_channel:
+                            log_embed = discord.Embed(
+                                title="🚨 User Timeout",
+                                color=0xFFA500,  # Orange
+                                timestamp=datetime.utcnow()
+                            )
+                            log_embed.add_field(name="User", value=user.mention, inline=True)
+                            log_embed.add_field(name="Action", value="Accumulated Warnings via /warn command", inline=True)
+                            log_embed.add_field(name="Duration", value=duration_str, inline=True)
+                            log_embed.add_field(name="Reason", value=f"Reached {warning_count} warnings.\n||No specific reason provided.||", inline=False)
+                            log_embed.set_footer(text=f"User ID: {user.id}")
+                            await log_channel.send(embed=log_embed)
+
+        except Exception as e:
+            self.bot.logger.error(f"Failed to issue warning to {user}: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while issuing the warning.",
+                color=0x8B0000,  # Dark red
+                timestamp=datetime.utcnow()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
     @app_commands.command(name="warns", description="View all warnings for a user.")
     @app_commands.describe(user="The user to view warnings for.")
     @app_commands.check(is_admin_or_owner)
     async def warns(self, interaction: discord.Interaction, user: discord.Member):
+        """
+        Retrieves and displays all warnings for a specified user.
+
+        :param interaction: The command interaction.
+        :param user: The user to view warnings for.
+        """
         await interaction.response.defer(ephemeral=True)
 
         try:
             warnings = await self.db.get_warnings(user_id=user.id, server_id=interaction.guild.id)
         except Exception as e:
             self.bot.logger.error(f"Failed to retrieve warnings for {user}: {e}")
-            await interaction.followup.send("An error occurred while fetching warnings.", ephemeral=True)
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while fetching warnings.",
+                color=0x8B0000,  # Dark red
+                timestamp=datetime.utcnow()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         if warnings:
@@ -357,15 +525,17 @@ class AutoMod(commands.Cog):
             else:
                 embed = discord.Embed(
                     title=f"Warnings for {user}",
-                    color=0xFF0000,
+                    color=0xFF0000,  # Red
+                    timestamp=datetime.utcnow()
                 )
                 for warn in warnings:
+                    warn_id, reason, moderator_id, timestamp = warn  # Unpack the tuple
                     embed.add_field(
-                        name=f"Warning ID: {warn['id']}",
+                        name=f"Warning ID: {warn_id}",
                         value=(
-                            f"**Reason:** {warn['reason']}\n"
-                            f"**Moderator:** <@{warn['moderator_id']}>\n"
-                            f"**Date:** <t:{int(warn['timestamp'])}:F>"
+                            f"**Reason:** {reason}\n"
+                            f"**Moderator:** <@{moderator_id}>\n"
+                            f"**Date:** <t:{int(timestamp)}:F>"
                         ),
                         inline=False,
                     )
@@ -374,7 +544,8 @@ class AutoMod(commands.Cog):
             embed = discord.Embed(
                 title="No Warnings Found",
                 description=f"{user.mention} has no recorded warnings.",
-                color=0x00FF00,
+                color=0x00FF00,  # Green
+                timestamp=datetime.utcnow()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -382,24 +553,44 @@ class AutoMod(commands.Cog):
     @app_commands.describe(user="The user to clear warnings for.")
     @app_commands.check(is_admin_or_owner)
     async def clearwarnings(self, interaction: discord.Interaction, user: discord.Member):
+        """
+        Clears all warnings for a specified user.
+
+        :param interaction: The command interaction.
+        :param user: The user to clear warnings for.
+        """
         await interaction.response.defer(ephemeral=True)
 
         try:
             await self.db.clear_all_warnings(user_id=user.id, server_id=interaction.guild.id)
             embed = discord.Embed(
-                title="Warnings Cleared",
+                title="✅ Warnings Cleared",
                 description=f"All warnings for {user.mention} have been cleared.",
-                color=0x00FF00,
+                color=0x00FF00,  # Green
+                timestamp=datetime.utcnow()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception as e:
             self.bot.logger.error(f"Failed to clear warnings for {user}: {e}")
-            await interaction.followup.send("An error occurred while clearing warnings.", ephemeral=True)
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while clearing warnings.",
+                color=0x8B0000,  # Dark red
+                timestamp=datetime.utcnow()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="clearwarn", description="Clear a specific warning for a user.")
     @app_commands.describe(user="The user to clear warning for.", warn_id="The ID of the warning to clear.")
     @app_commands.check(is_admin_or_owner)
     async def clearwarn(self, interaction: discord.Interaction, user: discord.Member, warn_id: int):
+        """
+        Clears a specific warning for a specified user.
+
+        :param interaction: The command interaction.
+        :param user: The user to clear warning for.
+        :param warn_id: The ID of the warning to clear.
+        """
         await interaction.response.defer(ephemeral=True)
 
         try:
@@ -407,45 +598,66 @@ class AutoMod(commands.Cog):
             result = await self.db.remove_warn(warn_id=warn_id, user_id=user.id, server_id=interaction.guild.id)
             if result:
                 embed = discord.Embed(
-                    title="Warning Removed",
+                    title="✅ Warning Removed",
                     description=f"Warning ID {warn_id} for {user.mention} has been removed.",
-                    color=0x00FF00,
+                    color=0x00FF00,  # Green
+                    timestamp=datetime.utcnow()
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
             else:
                 embed = discord.Embed(
-                    title="Warning Not Found",
+                    title="❌ Warning Not Found",
                     description=f"No warning with ID {warn_id} found for {user.mention}.",
-                    color=0xFF0000,
+                    color=0x8B0000,  # Dark red
+                    timestamp=datetime.utcnow()
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception as e:
             self.bot.logger.error(f"Failed to remove warning ID {warn_id} for {user}: {e}")
-            await interaction.followup.send("An error occurred while removing the warning.", ephemeral=True)
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while removing the warning.",
+                color=0x8B0000,  # Dark red
+                timestamp=datetime.utcnow()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
-    # Consolidated error handler
-    async def send_missing_permissions_error(self, interaction: discord.Interaction):
+    @commands.Cog.listener()
+    async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        """
+        Handles errors for all application commands in this cog.
+        """
+        # Ignore already handled errors
+        if hasattr(error, "handled") and error.handled:
+            return
+
         embed = discord.Embed(
-            title="Missing Permissions",
-            description="You need the `Administrator` permission to use this command.",
-            color=0xFF0000,
+            title="❌ Error",
+            description="An unexpected error occurred while processing the command.",
+            color=0x8B0000,  # Dark red color
+            timestamp=datetime.utcnow()
         )
+
+        if isinstance(error, app_commands.MissingPermissions):
+            embed.description = "You do not have the required permissions to use this command."
+        elif isinstance(error, app_commands.MissingRequiredArgument):
+            embed.description = "Missing arguments. Please check the command usage."
+        elif isinstance(error, app_commands.CommandOnCooldown):
+            embed.description = f"This command is on cooldown. Please try again after {error.retry_after:.2f} seconds."
+        elif isinstance(error, app_commands.CheckFailure):
+            embed.description = "You do not meet the requirements to use this command."
+        else:
+            # For unhandled errors, log the exception details for debugging
+            self.bot.logger.error(f"Unhandled error in command {interaction.command}: {error}")
+            embed.description = f"An unexpected error occurred: {error}"
+
+        # Send the embed as an ephemeral message
         if interaction.response.is_done():
             await interaction.followup.send(embed=embed, ephemeral=True)
         else:
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @warns.error
-    @clearwarnings.error
-    @clearwarn.error
-    async def commands_error(self, interaction: discord.Interaction, error):
-        if isinstance(error, app_commands.MissingPermissions):
-            await self.send_missing_permissions_error(interaction)
-        else:
-            self.bot.logger.error(f"Error in command {interaction.command}: {error}")
-            raise error
-
-# Setup function
-async def setup(bot):
+# Setup function to add the cog to the bot
+async def setup(bot: commands.Bot):
     await bot.add_cog(AutoMod(bot))
     bot.logger.info("AutoMod cog loaded.")

@@ -13,12 +13,12 @@ class DatabaseManager:
         try:
             await self.connection.execute("""
                 CREATE TABLE IF NOT EXISTS warns (
-                    id INTEGER PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL,
                     server_id TEXT NOT NULL,
                     moderator_id TEXT NOT NULL,
                     reason TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
             """)
 
@@ -62,7 +62,7 @@ class DatabaseManager:
 
             await self.connection.execute("""
                 CREATE TABLE IF NOT EXISTS tryout_settings (
-                    server_id TEXT NOT NULL PRIMARY KEY,
+                    server_id TEXT PRIMARY KEY,
                     tryout_channel_id TEXT
                 );
             """)
@@ -75,7 +75,6 @@ class DatabaseManager:
                 );
             """)
 
-            # New Table for Ping Roles (Under Tryouts)
             await self.connection.execute("""
                 CREATE TABLE IF NOT EXISTS ping_roles (
                     server_id TEXT NOT NULL,
@@ -105,17 +104,12 @@ class DatabaseManager:
         :return: The ID of the newly created warning.
         """
         try:
-            async with self.connection.execute(
-                "SELECT MAX(id) FROM warns WHERE user_id=? AND server_id=?",
-                (str(user_id), str(server_id)),
-            ) as cursor:
-                result = await cursor.fetchone()
-                warn_id = (result[0] or 0) + 1
-            await self.connection.execute(
-                "INSERT INTO warns(id, user_id, server_id, moderator_id, reason, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                (warn_id, str(user_id), str(server_id), str(moderator_id), reason),
+            cursor = await self.connection.execute(
+                "INSERT INTO warns(user_id, server_id, moderator_id, reason, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                (str(user_id), str(server_id), str(moderator_id), reason),
             )
             await self.connection.commit()
+            warn_id = cursor.lastrowid
             self.logger.info(f"Added warn ID {warn_id} for user {user_id} in server {server_id}.")
             return warn_id
         except Exception as e:
@@ -152,7 +146,7 @@ class DatabaseManager:
         """
         try:
             async with self.connection.execute(
-                "SELECT user_id, server_id, moderator_id, reason, strftime('%s', created_at), id FROM warns"
+                "SELECT id, user_id, server_id, moderator_id, reason, strftime('%s', created_at) FROM warns"
             ) as cursor:
                 warnings = await cursor.fetchall()
                 self.logger.info(f"Fetched all warnings: {len(warnings)} records found.")
@@ -171,7 +165,7 @@ class DatabaseManager:
         """
         try:
             async with self.connection.execute(
-                "SELECT user_id, server_id, moderator_id, reason, strftime('%s', created_at), id FROM warns WHERE user_id=? AND server_id=?",
+                "SELECT id, reason, moderator_id, strftime('%s', created_at) FROM warns WHERE user_id=? AND server_id=?",
                 (str(user_id), str(server_id)),
             ) as cursor:
                 warnings = await cursor.fetchall()
