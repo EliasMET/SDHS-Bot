@@ -83,12 +83,8 @@ class AutoMod(commands.Cog):
     Provides automated moderation features such as warning users,
     monitoring messages for prohibited content, and handling timeouts.
     
-    Version: 1.4.0
+    Version: 1.5.0
     """
-
-    # Define constants for the monitored user and exempt roles
-    MONITORED_USER_ID = 1178294054170153010  # The user to monitor mentions for
-    EXEMPT_ROLE_IDS = {1311777421049204846, 1289875864749867058}  # Roles that exempt from timeout
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -113,9 +109,6 @@ class AutoMod(commands.Cog):
         # Initialize cache for server settings
         self.server_settings_cache = {}
 
-        # Initialize cache for the monitored user
-        self.monitored_user = None
-
     async def cog_load(self):
         """
         Initialize the cog by setting up the database and caching owner_id.
@@ -129,13 +122,6 @@ class AutoMod(commands.Cog):
         if not hasattr(self.bot, 'owner_id'):
             app_info = await self.bot.application_info()
             self.bot.owner_id = app_info.owner.id
-
-        # Fetch and cache the monitored user
-        try:
-            self.monitored_user = await self.bot.fetch_user(self.MONITORED_USER_ID)
-            self.bot.logger.info(f"Monitored user '{self.monitored_user}' fetched and cached.")
-        except Exception as e:
-            self.bot.logger.error(f"Failed to fetch monitored user with ID {self.MONITORED_USER_ID}: {e}")
 
     def cog_unload(self):
         self.expire_warnings_task.cancel()
@@ -170,16 +156,17 @@ class AutoMod(commands.Cog):
                 user_id=message.author.id, server_id=message.guild.id
             )
 
+            # Fetch mute duration from settings
+            server_settings = await self.get_server_settings(message.guild.id)
+            automod_mute_duration = server_settings.get('automod_mute_duration', 3600)  # default 1 hour
             # Apply timeouts based on warning count
-            timeout_actions = {
-                3: timedelta(minutes=10),
-                6: timedelta(hours=24)
-            }
-
-            if warning_count in timeout_actions:
-                duration = timeout_actions[warning_count]
+            # For example, you can adjust thresholds:
+            # On every 3rd warning, apply a timeout (this is just an example)
+            if warning_count % 3 == 0:
+                # Use the configured mute duration
+                duration = timedelta(seconds=automod_mute_duration)
                 await message.author.timeout(duration, reason=f"Reached {warning_count} warnings")
-                duration_str = f"{int(duration.total_seconds() / 60)} minutes" if warning_count == 3 else "24 hours"
+                duration_str = str(duration)
                 timeout_notice = (
                     f"🚫 {message.author.mention} has been timed out for {duration_str} due to accumulating {warning_count} warnings."
                 )
@@ -190,7 +177,6 @@ class AutoMod(commands.Cog):
             await moderation_message.delete()
 
             # Log the automod action if logging is enabled
-            server_settings = await self.get_server_settings(message.guild.id)
             if server_settings.get('automod_logging_enabled'):
                 log_channel_id = server_settings.get('automod_log_channel_id')
                 if log_channel_id:
@@ -225,22 +211,26 @@ class AutoMod(commands.Cog):
 
         content = message.content
 
-        # Monitor mentions of the specific user
-        if self.MONITORED_USER_ID in [user.id for user in message.mentions]:
+        # Get protected user and exempt roles from DB
+        protected_user_id = server_settings.get('protected_user_id')
+        exempt_roles = await self.db.get_automod_exempt_roles(message.guild.id)
+
+        # Monitor mentions of the protected user if set
+        if protected_user_id and protected_user_id in [user.id for user in message.mentions]:
             # Only the bot owner can bypass the protected user mention check
             if not await self.is_owner(message.author):
                 # Check if the message author has any of the exempt roles
-                has_exempt_role = any(role.id in self.EXEMPT_ROLE_IDS for role in message.author.roles)
+                has_exempt_role = any(role.id in exempt_roles for role in message.author.roles)
 
                 if not has_exempt_role:
                     try:
-                        # Apply a timeout of one hour
-                        duration = timedelta(hours=1)
-                        await message.author.timeout(duration, reason=f"Mentioned user {self.monitored_user} without required roles.")
+                        # Fetch mute duration from settings
+                        automod_mute_duration = server_settings.get('automod_mute_duration', 3600)
+                        duration = timedelta(seconds=automod_mute_duration)
+                        await message.author.timeout(duration, reason=f"Mentioned protected user {protected_user_id} without required roles.")
 
-                        # Inform the channel about the timeout without pinging the protected user
                         timeout_message = await message.channel.send(
-                            f"🚫 {message.author.mention} has been timed out for 1 hour for mentioning {self.monitored_user.name} without the necessary roles."
+                            f"🚫 {message.author.mention} has been timed out for {duration} for mentioning the protected user without the necessary roles."
                         )
 
                         # Log the timeout action if logging is enabled
@@ -256,7 +246,7 @@ class AutoMod(commands.Cog):
                                     )
                                     log_embed.add_field(name="User", value=message.author.mention, inline=True)
                                     log_embed.add_field(name="Action", value="Mentioned Protected User Without Required Roles", inline=True)
-                                    log_embed.add_field(name="Duration", value="1 Hour", inline=True)
+                                    log_embed.add_field(name="Duration", value=str(duration), inline=True)
                                     log_embed.add_field(name="Reason", value=f"||{message.content}||", inline=False)
                                     log_embed.set_footer(text=f"User ID: {message.author.id}")
                                     await log_channel.send(embed=log_embed)
@@ -370,13 +360,6 @@ class AutoMod(commands.Cog):
     @app_commands.describe(user="The user to warn.", reason="The reason for the warning.")
     @app_commands.check(is_admin_or_owner)
     async def warn(self, interaction: discord.Interaction, user: discord.Member, reason: str):
-        """
-        Issues a warning to a specified user with a provided reason.
-
-        :param interaction: The command interaction.
-        :param user: The user to warn.
-        :param reason: The reason for the warning.
-        """
         await interaction.response.defer(ephemeral=True)  # Use the thinking function
 
         # Prevent warning the bot itself
@@ -384,7 +367,7 @@ class AutoMod(commands.Cog):
             embed = discord.Embed(
                 title="⚠️ Warning Issuance Failed",
                 description="I cannot warn myself.",
-                color=0x8B0000  # Dark red
+                color=0x8B0000
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
@@ -394,7 +377,7 @@ class AutoMod(commands.Cog):
             embed = discord.Embed(
                 title="⚠️ Warning Issuance Failed",
                 description="You cannot warn the server owner.",
-                color=0x8B0000  # Dark red
+                color=0x8B0000
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
@@ -404,7 +387,7 @@ class AutoMod(commands.Cog):
             embed = discord.Embed(
                 title="⚠️ Warning Issuance Failed",
                 description="You cannot warn a member with equal or higher roles.",
-                color=0x8B0000  # Dark red
+                color=0x8B0000
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
@@ -421,7 +404,7 @@ class AutoMod(commands.Cog):
             # Send a confirmation message to the moderator
             embed = discord.Embed(
                 title="✅ Warning Issued",
-                color=0x00FF00,  # Green
+                color=0x00FF00,
                 timestamp=datetime.utcnow()
             )
             embed.add_field(name="User", value=user.mention, inline=True)
@@ -434,7 +417,7 @@ class AutoMod(commands.Cog):
             try:
                 dm_embed = discord.Embed(
                     title="⚠️ You Have Been Warned",
-                    color=0xFFA500,  # Orange
+                    color=0xFFA500,
                     timestamp=datetime.utcnow()
                 )
                 dm_embed.add_field(name="Server", value=interaction.guild.name, inline=False)
@@ -447,15 +430,14 @@ class AutoMod(commands.Cog):
 
             # Check if the warning count triggers any automatic actions
             warning_count = await self.db.count_warnings(user_id=user.id, server_id=interaction.guild.id)
-            timeout_actions = {
-                3: timedelta(minutes=10),
-                6: timedelta(hours=24)
-            }
+            # Fetch mute duration from settings
+            server_settings = await self.get_server_settings(interaction.guild.id)
+            automod_mute_duration = server_settings.get('automod_mute_duration', 3600)
 
-            if warning_count in timeout_actions:
-                duration = timeout_actions[warning_count]
+            if warning_count % 3 == 0:
+                duration = timedelta(seconds=automod_mute_duration)
                 await user.timeout(duration, reason=f"Reached {warning_count} warnings via /warn command")
-                duration_str = f"{int(duration.total_seconds() / 60)} minutes" if warning_count == 3 else "24 hours"
+                duration_str = str(duration)
                 timeout_notice = (
                     f"🚫 {user.mention} has been timed out for {duration_str} due to accumulating {warning_count} warnings."
                 )
@@ -464,7 +446,6 @@ class AutoMod(commands.Cog):
                     await system_channel.send(timeout_notice)
 
                 # Log the timeout action if logging is enabled
-                server_settings = await self.get_server_settings(interaction.guild.id)
                 if server_settings.get('automod_logging_enabled'):
                     log_channel_id = server_settings.get('automod_log_channel_id')
                     if log_channel_id:
@@ -472,7 +453,7 @@ class AutoMod(commands.Cog):
                         if log_channel:
                             log_embed = discord.Embed(
                                 title="🚨 User Timeout",
-                                color=0xFFA500,  # Orange
+                                color=0xFFA500,
                                 timestamp=datetime.utcnow()
                             )
                             log_embed.add_field(name="User", value=user.mention, inline=True)
@@ -487,7 +468,7 @@ class AutoMod(commands.Cog):
             embed = discord.Embed(
                 title="❌ Error",
                 description="An error occurred while issuing the warning.",
-                color=0x8B0000,  # Dark red
+                color=0x8B0000,
                 timestamp=datetime.utcnow()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -496,12 +477,6 @@ class AutoMod(commands.Cog):
     @app_commands.describe(user="The user to view warnings for.")
     @app_commands.check(is_admin_or_owner)
     async def warns(self, interaction: discord.Interaction, user: discord.Member):
-        """
-        Retrieves and displays all warnings for a specified user.
-
-        :param interaction: The command interaction.
-        :param user: The user to view warnings for.
-        """
         await interaction.response.defer(ephemeral=True)
 
         try:
@@ -511,7 +486,7 @@ class AutoMod(commands.Cog):
             embed = discord.Embed(
                 title="❌ Error",
                 description="An error occurred while fetching warnings.",
-                color=0x8B0000,  # Dark red
+                color=0x8B0000,
                 timestamp=datetime.utcnow()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -525,7 +500,7 @@ class AutoMod(commands.Cog):
             else:
                 embed = discord.Embed(
                     title=f"Warnings for {user}",
-                    color=0xFF0000,  # Red
+                    color=0xFF0000,
                     timestamp=datetime.utcnow()
                 )
                 for warn in warnings:
@@ -544,7 +519,7 @@ class AutoMod(commands.Cog):
             embed = discord.Embed(
                 title="No Warnings Found",
                 description=f"{user.mention} has no recorded warnings.",
-                color=0x00FF00,  # Green
+                color=0x00FF00,
                 timestamp=datetime.utcnow()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -553,20 +528,14 @@ class AutoMod(commands.Cog):
     @app_commands.describe(user="The user to clear warnings for.")
     @app_commands.check(is_admin_or_owner)
     async def clearwarnings(self, interaction: discord.Interaction, user: discord.Member):
-        """
-        Clears all warnings for a specified user.
-
-        :param interaction: The command interaction.
-        :param user: The user to clear warnings for.
-        """
         await interaction.response.defer(ephemeral=True)
 
         try:
-            await self.db.clear_all_warnings(user_id=user.id, server_id=interaction.guild.id)
+            removed_count = await self.db.clear_all_warnings(user_id=user.id, server_id=interaction.guild.id)
             embed = discord.Embed(
                 title="✅ Warnings Cleared",
-                description=f"All warnings for {user.mention} have been cleared.",
-                color=0x00FF00,  # Green
+                description=f"All warnings for {user.mention} have been cleared. ({removed_count} removed)",
+                color=0x00FF00,
                 timestamp=datetime.utcnow()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -575,7 +544,7 @@ class AutoMod(commands.Cog):
             embed = discord.Embed(
                 title="❌ Error",
                 description="An error occurred while clearing warnings.",
-                color=0x8B0000,  # Dark red
+                color=0x8B0000,
                 timestamp=datetime.utcnow()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -584,13 +553,6 @@ class AutoMod(commands.Cog):
     @app_commands.describe(user="The user to clear warning for.", warn_id="The ID of the warning to clear.")
     @app_commands.check(is_admin_or_owner)
     async def clearwarn(self, interaction: discord.Interaction, user: discord.Member, warn_id: int):
-        """
-        Clears a specific warning for a specified user.
-
-        :param interaction: The command interaction.
-        :param user: The user to clear warning for.
-        :param warn_id: The ID of the warning to clear.
-        """
         await interaction.response.defer(ephemeral=True)
 
         try:
@@ -600,7 +562,7 @@ class AutoMod(commands.Cog):
                 embed = discord.Embed(
                     title="✅ Warning Removed",
                     description=f"Warning ID {warn_id} for {user.mention} has been removed.",
-                    color=0x00FF00,  # Green
+                    color=0x00FF00,
                     timestamp=datetime.utcnow()
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
@@ -608,7 +570,7 @@ class AutoMod(commands.Cog):
                 embed = discord.Embed(
                     title="❌ Warning Not Found",
                     description=f"No warning with ID {warn_id} found for {user.mention}.",
-                    color=0x8B0000,  # Dark red
+                    color=0x8B0000,
                     timestamp=datetime.utcnow()
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
@@ -617,7 +579,7 @@ class AutoMod(commands.Cog):
             embed = discord.Embed(
                 title="❌ Error",
                 description="An error occurred while removing the warning.",
-                color=0x8B0000,  # Dark red
+                color=0x8B0000,
                 timestamp=datetime.utcnow()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -627,14 +589,13 @@ class AutoMod(commands.Cog):
         """
         Handles errors for all application commands in this cog.
         """
-        # Ignore already handled errors
         if hasattr(error, "handled") and error.handled:
             return
 
         embed = discord.Embed(
             title="❌ Error",
             description="An unexpected error occurred while processing the command.",
-            color=0x8B0000,  # Dark red color
+            color=0x8B0000,
             timestamp=datetime.utcnow()
         )
 
@@ -647,11 +608,9 @@ class AutoMod(commands.Cog):
         elif isinstance(error, app_commands.CheckFailure):
             embed.description = "You do not meet the requirements to use this command."
         else:
-            # For unhandled errors, log the exception details for debugging
             self.bot.logger.error(f"Unhandled error in command {interaction.command}: {error}")
             embed.description = f"An unexpected error occurred: {error}"
 
-        # Send the embed as an ephemeral message
         if interaction.response.is_done():
             await interaction.followup.send(embed=embed, ephemeral=True)
         else:
