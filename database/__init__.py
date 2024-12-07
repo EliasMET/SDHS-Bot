@@ -84,42 +84,52 @@ class DatabaseManager:
         """
     }
 
+    # Columns we expect to exist in server_settings and their definitions
+    REQUIRED_COLUMNS = {
+        "server_settings": {
+            "server_id": "TEXT PRIMARY KEY",
+            "automod_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "automod_logging_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "automod_log_channel_id": "TEXT",
+            "tryout_channel_id": "TEXT",
+            "mod_log_channel_id": "TEXT",
+            "automod_mute_duration": "INTEGER NOT NULL DEFAULT 3600"
+        }
+    }
+
     def __init__(self, *, connection: aiosqlite.Connection) -> None:
         self.connection = connection
         self.logger = logging.getLogger('DatabaseManager')
 
-    async def ensure_column_exists(self, table: str, column: str, definition: str):
+    async def ensure_columns_exist(self, table: str, columns: dict):
         """
-        Ensure a column exists in a table, and if not, add it.
-        :param table: The name of the table to check.
-        :param column: The column name to ensure.
-        :param definition: The full column definition, e.g. "INTEGER NOT NULL DEFAULT 3600".
+        Ensure all columns in `columns` dict exist in `table`.
+        If a column is missing, add it using ALTER TABLE.
         """
         try:
             async with self.connection.execute(f"PRAGMA table_info({table})") as cursor:
-                columns = await cursor.fetchall()
-            column_names = [col[1] for col in columns]  # column name is second field in PRAGMA table_info
-            if column not in column_names:
-                self.logger.info(f"Column '{column}' not found in '{table}'. Adding it.")
-                await self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-                await self.connection.commit()
+                existing_cols = await cursor.fetchall()
+            existing_col_names = [col[1] for col in existing_cols]
+
+            for col_name, col_def in columns.items():
+                if col_name not in existing_col_names:
+                    self.logger.info(f"Column '{col_name}' not found in '{table}'. Adding it.")
+                    await self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
+                    await self.connection.commit()
+
         except Exception as e:
-            self.logger.error(f"Failed to ensure column exists: {e}")
+            self.logger.error(f"Failed to ensure columns exist for {table}: {e}")
             raise
 
     async def initialize_database(self):
         try:
             for query in self.CREATE_TABLE_QUERIES.values():
                 await self.connection.execute(query)
-            # Commit after creating tables
             await self.connection.commit()
 
-            # Ensure automod_mute_duration column exists in server_settings table
-            await self.ensure_column_exists(
-                "server_settings",
-                "automod_mute_duration",
-                "INTEGER NOT NULL DEFAULT 3600"
-            )
+            # Ensure all required columns for server_settings
+            if "server_settings" in self.REQUIRED_COLUMNS:
+                await self.ensure_columns_exist("server_settings", self.REQUIRED_COLUMNS["server_settings"])
 
             self.logger.info("Database initialized and tables ensured.")
         except Exception as e:
@@ -276,6 +286,7 @@ class DatabaseManager:
             (str(server_id), str(role_id))
         )
 
+    # Moderation Allowed Roles
     async def get_moderation_allowed_roles(self, server_id: int):
         return await self.get_roles(server_id, "moderation_allowed_roles")
 
@@ -295,6 +306,7 @@ class DatabaseManager:
         )
         return int(result[0]) if result and result[0] else None
 
+    # Tryout Groups
     async def get_tryout_groups(self, server_id: int) -> list:
         return await self.fetchall(
             "SELECT group_id, description, link, event_name FROM tryout_groups WHERE server_id = ?",
@@ -325,6 +337,7 @@ class DatabaseManager:
             (str(server_id), group_id)
         )
 
+    # Tryout required roles
     async def get_tryout_required_roles(self, server_id: int) -> list:
         return await self.get_roles(server_id, "tryout_required_roles")
 
@@ -347,6 +360,7 @@ class DatabaseManager:
             (str(server_id), str(channel_id))
         )
 
+    # Ping roles
     async def get_ping_roles(self, server_id: int) -> list:
         return await self.get_roles(server_id, "ping_roles")
 
@@ -356,6 +370,7 @@ class DatabaseManager:
     async def remove_ping_role(self, server_id: int, role_id: int):
         await self.remove_role(server_id, role_id, "ping_roles")
 
+    # Locked channels
     async def lock_channel_in_db(self, server_id: int, channel_id: int):
         await self.execute(
             "INSERT OR IGNORE INTO locked_channels (server_id, channel_id) VALUES (?, ?)",
@@ -375,6 +390,7 @@ class DatabaseManager:
         )
         return result is not None
 
+    # Automod protected users
     async def get_protected_users(self, server_id: int) -> list:
         rows = await self.fetchall(
             "SELECT user_id FROM automod_protected_users WHERE server_id = ?",
@@ -394,6 +410,7 @@ class DatabaseManager:
             (str(server_id), str(user_id))
         )
 
+    # Automod exempt roles
     async def get_exempt_roles(self, server_id: int) -> list:
         return await self.get_roles(server_id, "automod_exempt_roles")
 
