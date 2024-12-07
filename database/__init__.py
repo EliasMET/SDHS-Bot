@@ -84,7 +84,7 @@ class DatabaseManager:
         """
     }
 
-    # Columns we expect to exist in server_settings and their definitions
+    # Columns we expect in server_settings and their SQL definitions
     REQUIRED_COLUMNS = {
         "server_settings": {
             "server_id": "TEXT PRIMARY KEY",
@@ -103,19 +103,22 @@ class DatabaseManager:
 
     async def ensure_columns_exist(self, table: str, columns: dict):
         """
-        Ensure all columns in `columns` dict exist in `table`.
+        Ensure all columns in `columns` exist in `table`.
         If a column is missing, add it using ALTER TABLE.
         """
         try:
+            self.logger.info(f"Checking columns for table '{table}'...")
             async with self.connection.execute(f"PRAGMA table_info({table})") as cursor:
                 existing_cols = await cursor.fetchall()
             existing_col_names = [col[1] for col in existing_cols]
 
             for col_name, col_def in columns.items():
                 if col_name not in existing_col_names:
-                    self.logger.info(f"Column '{col_name}' not found in '{table}'. Adding it.")
+                    self.logger.info(f"Column '{col_name}' not found in '{table}'. Adding it with definition '{col_def}'.")
                     await self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
                     await self.connection.commit()
+                else:
+                    self.logger.info(f"Column '{col_name}' already exists in '{table}'.")
 
         except Exception as e:
             self.logger.error(f"Failed to ensure columns exist for {table}: {e}")
@@ -123,11 +126,11 @@ class DatabaseManager:
 
     async def initialize_database(self):
         try:
+            self.logger.info("Initializing database tables...")
             for query in self.CREATE_TABLE_QUERIES.values():
                 await self.connection.execute(query)
             await self.connection.commit()
 
-            # Ensure all required columns for server_settings
             if "server_settings" in self.REQUIRED_COLUMNS:
                 await self.ensure_columns_exist("server_settings", self.REQUIRED_COLUMNS["server_settings"])
 
@@ -166,15 +169,14 @@ class DatabaseManager:
             raise
 
     # ---------------------------
-    # Warns
+    # Warn Methods
     # ---------------------------
     async def add_warn(self, user_id: int, server_id: int, moderator_id: int, reason: str) -> int:
         cursor = await self.execute(
             "INSERT INTO warns(user_id, server_id, moderator_id, reason, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
             (str(user_id), str(server_id), str(moderator_id), reason)
         )
-        warn_id = cursor.lastrowid
-        return warn_id
+        return cursor.lastrowid
 
     async def remove_warn(self, warn_id: int, user_id: int, server_id: int) -> bool:
         cursor = await self.execute(
@@ -235,6 +237,7 @@ class DatabaseManager:
                 'mod_log_channel_id': int(result[4]) if result[4] else None,
                 'automod_mute_duration': int(result[5]) if result[5] else 3600
             }
+        # If no row found for this server, initialize defaults
         await self.initialize_server_settings(server_id)
         return {
             'automod_enabled': True,
@@ -254,7 +257,10 @@ class DatabaseManager:
     async def toggle_server_setting(self, server_id: int, setting_name: str):
         current_settings = await self.get_server_settings(server_id)
         current_value = current_settings.get(setting_name)
-        new_value = int(not current_value) if isinstance(current_value, bool) else (0 if current_value else 1)
+        if isinstance(current_value, bool):
+            new_value = int(not current_value)
+        else:
+            new_value = 0 if current_value else 1
         await self.update_server_setting(server_id, setting_name, new_value)
 
     async def get_automod_mute_duration(self, server_id: int) -> int:
