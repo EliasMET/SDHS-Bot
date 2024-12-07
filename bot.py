@@ -1,9 +1,5 @@
 """
-Copyright © Krypton 2019-Present - https://github.com/kkrypt0nn
-Description:
-🐍 A simple template to start to code your own and personalized Discord bot in Python
-
-Version: 6.2.0
+bot.py
 """
 
 import json
@@ -27,63 +23,18 @@ else:
     with open(f"{os.path.realpath(os.path.dirname(__file__))}/config.json") as file:
         config = json.load(file)
 
-"""	
-Setup bot intents (events restrictions)
-For more information about intents, please go to the following websites:
-https://discordpy.readthedocs.io/en/latest/intents.html
-https://discordpy.readthedocs.io/en/latest/intents.html#privileged-intents
-
-Default Intents:
-intents.bans = True
-intents.dm_messages = True
-intents.dm_reactions = True
-intents.dm_typing = True
-intents.emojis = True
-intents.emojis_and_stickers = True
-intents.guild_messages = True
-intents.guild_reactions = True
-intents.guild_scheduled_events = True
-intents.guild_typing = True
-intents.guilds = True
-intents.integrations = True
-intents.invites = True
-intents.messages = True # `message_content` is required to get the content of the messages
-intents.reactions = True
-intents.typing = True
-intents.voice_states = True
-intents.webhooks = True
-
-Privileged Intents (Needs to be enabled on developer portal of Discord), please use them only if you need them:
-intents.members = True
-intents.message_content = True
-intents.presences = True
-"""
-
 intents = discord.Intents.default()
-
-"""
-Uncomment this if you want to use prefix (normal) commands.
-It is recommended to use slash commands and therefore not use prefix commands.
-
-If you want to use prefix commands, make sure to also enable the intent below in the Discord developer portal.
-"""
-# intents.message_content = True
-
-# Setup both of the loggers
-
 intents.members = True
 intents.message_content = True
 intents.presences = True
 
 class LoggingFormatter(logging.Formatter):
-    # Colors
     black = "\x1b[30m"
     red = "\x1b[31m"
     green = "\x1b[32m"
     yellow = "\x1b[33m"
     blue = "\x1b[34m"
     gray = "\x1b[38m"
-    # Styles
     reset = "\x1b[0m"
     bold = "\x1b[1m"
 
@@ -96,7 +47,7 @@ class LoggingFormatter(logging.Formatter):
     }
 
     def format(self, record):
-        log_color = self.COLORS[record.levelno]
+        log_color = self.COLORS.get(record.levelno, self.reset)
         format = "(black){asctime}(reset) (levelcolor){levelname:<8}(reset) (green){name}(reset) {message}"
         format = format.replace("(black)", self.black + self.bold)
         format = format.replace("(reset)", self.reset)
@@ -109,17 +60,15 @@ class LoggingFormatter(logging.Formatter):
 logger = logging.getLogger("discord_bot")
 logger.setLevel(logging.INFO)
 
-# Console handler
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(LoggingFormatter())
-# File handler
+
 file_handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="w")
 file_handler_formatter = logging.Formatter(
     "[{asctime}] [{levelname:<8}] {name}: {message}", "%Y-%m-%d %H:%M:%S", style="{"
 )
 file_handler.setFormatter(file_handler_formatter)
 
-# Add the handlers
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
 
@@ -131,32 +80,26 @@ class DiscordBot(commands.Bot):
             intents=intents,
             help_command=None,
         )
-        """
-        This creates custom bot variables so that we can access these variables in cogs more easily.
-
-        For example, The config is available using the following code:
-        - self.config # In this class
-        - bot.config # In this file
-        - self.bot.config # In cogs
-        """
         self.logger = logger
         self.config = config
-        self.database = None  # Will be initialized later
+        self.database = None
 
     async def init_db(self) -> None:
+        # This simply runs the schema.sql if it exists.
         async with aiosqlite.connect(
             f"{os.path.realpath(os.path.dirname(__file__))}/database/database.db"
         ) as db:
-            with open(
-                f"{os.path.realpath(os.path.dirname(__file__))}/database/schema.sql"
-            ) as file:
-                await db.executescript(file.read())
-            await db.commit()
+            schema_path = f"{os.path.realpath(os.path.dirname(__file__))}/database/schema.sql"
+            if os.path.isfile(schema_path):
+                self.logger.info("Applying schema.sql to the database...")
+                with open(schema_path) as file:
+                    await db.executescript(file.read())
+                await db.commit()
+                self.logger.info("Schema applied successfully.")
+            else:
+                self.logger.info("No schema.sql found, skipping schema application.")
 
     async def load_cogs(self) -> None:
-        """
-        The code in this function is executed whenever the bot will start.
-        """
         for file in os.listdir(f"{os.path.realpath(os.path.dirname(__file__))}/cogs"):
             if file.endswith(".py"):
                 extension = file[:-3]
@@ -165,62 +108,43 @@ class DiscordBot(commands.Bot):
                     self.logger.info(f"Loaded extension '{extension}'")
                 except Exception as e:
                     exception = f"{type(e).__name__}: {e}"
-                    self.logger.error(
-                        f"Failed to load extension {extension}\n{exception}"
-                    )
+                    self.logger.error(f"Failed to load extension {extension}\n{exception}")
 
     @tasks.loop(minutes=1.0)
     async def status_task(self) -> None:
-        """
-        Setup the game status task of the bot.
-        """
         statuses = ["with ranks"]
         await self.change_presence(activity=discord.Game(random.choice(statuses)))
 
     @status_task.before_loop
     async def before_status_task(self) -> None:
-        """
-        Before starting the status changing task, we make sure the bot is ready
-        """
         await self.wait_until_ready()
 
     async def setup_hook(self) -> None:
-        """
-        This will be executed when the bot starts for the first time.
-        """
         self.logger.info(f"Logged in as {self.user.name}")
         self.logger.info(f"discord.py API version: {discord.__version__}")
         self.logger.info(f"Python version: {platform.python_version()}")
-        self.logger.info(
-            f"Running on: {platform.system()} {platform.release()} ({os.name})"
-        )
+        self.logger.info(f"Running on: {platform.system()} {platform.release()} ({os.name})")
         self.logger.info("-------------------")
+
         await self.init_db()
-        # Initialize the database manager before loading cogs
-        self.database = DatabaseManager(
-            connection=await aiosqlite.connect(
-                f"{os.path.realpath(os.path.dirname(__file__))}/database/database.db"
-            )
-        )
+        db_path = f"{os.path.realpath(os.path.dirname(__file__))}/database/database.db"
+        self.logger.info("Connecting to the database...")
+        conn = await aiosqlite.connect(db_path)
+        self.database = DatabaseManager(connection=conn)
+
+        self.logger.info("Calling initialize_database on DatabaseManager...")
+        await self.database.initialize_database()
+        self.logger.info("Database schema and columns ensured.")
+
         await self.load_cogs()
         self.status_task.start()
 
     async def on_message(self, message: discord.Message) -> None:
-        """
-        The code in this event is executed every time someone sends a message, with or without the prefix
-
-        :param message: The message that was sent.
-        """
         if message.author == self.user or message.author.bot:
             return
         await self.process_commands(message)
 
     async def on_command_completion(self, context: Context) -> None:
-        """
-        The code in this event is executed every time a normal command has been *successfully* executed.
-
-        :param context: The context of the command that has been executed.
-        """
         full_command_name = context.command.qualified_name
         split = full_command_name.split(" ")
         executed_command = str(split[0])
@@ -234,12 +158,6 @@ class DiscordBot(commands.Bot):
             )
 
     async def on_command_error(self, context: Context, error) -> None:
-        """
-        The code in this event is executed every time a normal valid command catches an error.
-
-        :param context: The context of the normal command that failed executing.
-        :param error: The error that has been faced.
-        """
         if isinstance(error, commands.CommandOnCooldown):
             minutes, seconds = divmod(error.retry_after, 60)
             hours, minutes = divmod(minutes, 60)
@@ -256,11 +174,11 @@ class DiscordBot(commands.Bot):
             await context.send(embed=embed)
             if context.guild:
                 self.logger.warning(
-                    f"{context.author} (ID: {context.author.id}) tried to execute an owner-only command in the guild {context.guild.name} (ID: {context.guild.id}), but the user is not an owner of the bot."
+                    f"{context.author} (ID: {context.author.id}) tried to execute an owner-only command in {context.guild.name} (ID: {context.guild.id})."
                 )
             else:
                 self.logger.warning(
-                    f"{context.author} (ID: {context.author.id}) tried to execute an owner-only command in the bot's DMs, but the user is not an owner of the bot."
+                    f"{context.author} (ID: {context.author.id}) tried to execute an owner-only command in DMs."
                 )
         elif isinstance(error, commands.MissingPermissions):
             embed = discord.Embed(
@@ -281,7 +199,6 @@ class DiscordBot(commands.Bot):
         elif isinstance(error, commands.MissingRequiredArgument):
             embed = discord.Embed(
                 title="Error!",
-                # We need to capitalize because the command arguments have no capital letter in the code and they are the first word in the error message.
                 description=str(error).capitalize(),
                 color=0xE02B2B,
             )
