@@ -8,7 +8,8 @@ class DatabaseManager:
 
     async def initialize_database(self):
         """
-        Initializes the database by creating necessary tables if they do not exist.
+        Initializes the database by creating necessary tables if they do not exist,
+        and ensures columns are present.
         """
         try:
             await self.connection.execute("""
@@ -32,6 +33,9 @@ class DatabaseManager:
                     mod_log_channel_id TEXT
                 );
             """)
+
+            # Ensure automod_mute_duration column exists
+            await self.ensure_column_exists("server_settings", "automod_mute_duration", "INTEGER NOT NULL DEFAULT 3600")
 
             await self.connection.execute("""
                 CREATE TABLE IF NOT EXISTS moderation_allowed_roles (
@@ -75,7 +79,6 @@ class DatabaseManager:
                 );
             """)
 
-            # New Table for Ping Roles (Under Tryouts)
             await self.connection.execute("""
                 CREATE TABLE IF NOT EXISTS ping_roles (
                     server_id TEXT NOT NULL,
@@ -84,7 +87,7 @@ class DatabaseManager:
                 );
             """)
 
-            # New Table for Automod Exempt Roles
+            # Automod exempt roles
             await self.connection.execute("""
                 CREATE TABLE IF NOT EXISTS automod_exempt_roles (
                     server_id TEXT NOT NULL,
@@ -93,11 +96,38 @@ class DatabaseManager:
                 );
             """)
 
+            # Protected users
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS protected_users (
+                    server_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    PRIMARY KEY (server_id, user_id)
+                );
+            """)
+
             await self.connection.commit()
             self.logger.info("Database initialized and tables ensured.")
         except Exception as e:
             self.logger.error(f"Failed to initialize database: {e}")
             raise RuntimeError(f"Failed to initialize database: {e}")
+
+    async def ensure_column_exists(self, table: str, column: str, column_def: str):
+        """
+        Ensures that a column exists in a given table. If it doesn't, it will be added.
+        """
+        try:
+            async with self.connection.execute(f"PRAGMA table_info({table})") as cursor:
+                cols = await cursor.fetchall()
+                col_names = [c[1] for c in cols]
+
+            if column not in col_names:
+                # Add the column
+                await self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def};")
+                await self.connection.commit()
+                self.logger.info(f"Added missing column '{column}' to table '{table}'.")
+        except Exception as e:
+            self.logger.error(f"Failed to ensure column exists '{column}' in '{table}': {e}")
+            raise RuntimeError(f"Failed to ensure column exists: {e}")
 
     # ---------------------------
     # Methods for Managing Warns
@@ -209,7 +239,7 @@ class DatabaseManager:
     async def initialize_server_settings(self, server_id: int):
         try:
             await self.connection.execute(
-                "INSERT OR IGNORE INTO server_settings (server_id, automod_enabled, automod_logging_enabled, automod_log_channel_id, tryout_channel_id, mod_log_channel_id) VALUES (?, 1, 0, NULL, NULL, NULL)",
+                "INSERT OR IGNORE INTO server_settings (server_id, automod_enabled, automod_logging_enabled, automod_log_channel_id, tryout_channel_id, mod_log_channel_id, automod_mute_duration) VALUES (?, 1, 0, NULL, NULL, NULL, 3600)",
                 (str(server_id),)
             )
             await self.connection.commit()
@@ -221,7 +251,7 @@ class DatabaseManager:
     async def get_server_settings(self, server_id: int) -> dict:
         try:
             async with self.connection.execute(
-                "SELECT automod_enabled, automod_logging_enabled, automod_log_channel_id, tryout_channel_id, mod_log_channel_id FROM server_settings WHERE server_id=?",
+                "SELECT automod_enabled, automod_logging_enabled, automod_log_channel_id, tryout_channel_id, mod_log_channel_id, automod_mute_duration FROM server_settings WHERE server_id=?",
                 (str(server_id),)
             ) as cursor:
                 result = await cursor.fetchone()
@@ -231,7 +261,8 @@ class DatabaseManager:
                         'automod_logging_enabled': bool(result[1]),
                         'automod_log_channel_id': int(result[2]) if result[2] else None,
                         'tryout_channel_id': int(result[3]) if result[3] else None,
-                        'mod_log_channel_id': int(result[4]) if result[4] else None
+                        'mod_log_channel_id': int(result[4]) if result[4] else None,
+                        'automod_mute_duration': int(result[5]) if result[5] else 3600
                     }
                     self.logger.info(f"Fetched server settings for server {server_id}: {settings}")
                     return settings
@@ -243,7 +274,8 @@ class DatabaseManager:
                         'automod_logging_enabled': False,
                         'automod_log_channel_id': None,
                         'tryout_channel_id': None,
-                        'mod_log_channel_id': None
+                        'mod_log_channel_id': None,
+                        'automod_mute_duration': 3600
                     }
                     self.logger.info(f"Initialized and fetched default server settings for server {server_id}: {default_settings}")
                     return default_settings
@@ -276,6 +308,102 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Failed to toggle server setting '{setting_name}': {e}")
             raise RuntimeError(f"Failed to toggle server setting '{setting_name}': {e}")
+
+    # ---------------------------
+    # Automod Mute Duration Methods
+    # ---------------------------
+
+    async def get_automod_mute_duration(self, server_id: int) -> int:
+        try:
+            async with self.connection.execute(
+                "SELECT automod_mute_duration FROM server_settings WHERE server_id = ?",
+                (str(server_id),)
+            ) as cursor:
+                result = await cursor.fetchone()
+                duration = int(result[0]) if result and result[0] else 3600
+                self.logger.info(f"Fetched automod mute duration for server {server_id}: {duration} seconds")
+                return duration
+        except Exception as e:
+            self.logger.error(f"Failed to get automod mute duration: {e}")
+            raise RuntimeError(f"Failed to get automod mute duration: {e}")
+
+    async def set_automod_mute_duration(self, server_id: int, duration: int):
+        try:
+            await self.connection.execute(
+                "UPDATE server_settings SET automod_mute_duration = ? WHERE server_id = ?",
+                (str(duration), str(server_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Set automod mute duration to {duration} seconds for server {server_id}.")
+        except Exception as e:
+            self.logger.error(f"Failed to set automod mute duration: {e}")
+            raise RuntimeError(f"Failed to set automod mute duration: {e}")
+
+    # ---------------------------
+    # Methods for Protected Users
+    # ---------------------------
+
+    async def get_protected_users(self, server_id: int) -> list:
+        """
+        Retrieves a list of user IDs that are protected from automod.
+        """
+        try:
+            async with self.connection.execute(
+                "SELECT user_id FROM protected_users WHERE server_id = ?",
+                (str(server_id),)
+            ) as cursor:
+                users = await cursor.fetchall()
+                user_ids = [int(u[0]) for u in users]
+                self.logger.info(f"Fetched protected users for server {server_id}: {user_ids}")
+                return user_ids
+        except Exception as e:
+            self.logger.error(f"Failed to get protected users: {e}")
+            raise RuntimeError(f"Failed to get protected users: {e}")
+
+    async def add_protected_user(self, server_id: int, user_id: int):
+        """
+        Adds a user to the list of protected users.
+        """
+        try:
+            await self.connection.execute(
+                "INSERT INTO protected_users (server_id, user_id) VALUES (?, ?)",
+                (str(server_id), str(user_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Added protected user {user_id} to server {server_id}.")
+        except aiosqlite.IntegrityError:
+            self.logger.warning(f"Protected user {user_id} already exists in server {server_id}.")
+        except Exception as e:
+            self.logger.error(f"Failed to add protected user: {e}")
+            raise RuntimeError(f"Failed to add protected user: {e}")
+
+    async def remove_protected_user(self, server_id: int, user_id: int):
+        """
+        Removes a user from the list of protected users.
+        """
+        try:
+            await self.connection.execute(
+                "DELETE FROM protected_users WHERE server_id = ? AND user_id = ?",
+                (str(server_id), str(user_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Removed protected user {user_id} from server {server_id}.")
+        except Exception as e:
+            self.logger.error(f"Failed to remove protected user: {e}")
+            raise RuntimeError(f"Failed to remove protected user: {e}")
+
+    # ---------------------------
+    # Methods for Exempt Roles (Alias for Automod Exempt Roles)
+    # ---------------------------
+
+    async def get_exempt_roles(self, server_id: int) -> list:
+        return await self.get_automod_exempt_roles(server_id)
+
+    async def add_exempt_role(self, server_id: int, role_id: int):
+        return await self.add_automod_exempt_role(server_id, role_id)
+
+    async def remove_exempt_role(self, server_id: int, role_id: int):
+        return await self.remove_automod_exempt_role(server_id, role_id)
 
     # ---------------------------
     # Methods for Moderation Allowed Roles

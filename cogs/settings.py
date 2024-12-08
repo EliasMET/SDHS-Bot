@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from enum import Enum
+import traceback
 
 class SettingsCategory(Enum):
     AUTOMOD = "automod"
@@ -47,7 +48,19 @@ class Settings(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         handler = self.category_handlers.get(category.value)
         if handler:
-            await handler(interaction)
+            try:
+                await handler(interaction)
+            except Exception as e:
+                # Log error to console
+                print("An error occurred while handling settings:")
+                traceback.print_exc()
+                # Show user a more informative error message
+                embed = discord.Embed(
+                    title="Error",
+                    description=f"An error occurred while processing your request:\n**{type(e).__name__}:** {e}",
+                    color=0xE02B2B
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
         else:
             await interaction.followup.send(
                 embed=discord.Embed(
@@ -59,23 +72,59 @@ class Settings(commands.Cog):
             )
 
     async def handle_automod_settings(self, interaction: discord.Interaction):
-        settings = await self.db.get_server_settings(interaction.guild.id)
-        if not settings:
-            await self.db.initialize_server_settings(interaction.guild.id)
+        try:
             settings = await self.db.get_server_settings(interaction.guild.id)
-        embed = await self.create_automod_settings_embed(settings, interaction.guild.id, page=1)
-        view = AutomodSettingsView(self.db, interaction.guild, self, page=1)
-        view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            if not settings:
+                await self.db.initialize_server_settings(interaction.guild.id)
+                settings = await self.db.get_server_settings(interaction.guild.id)
+            embed = await self.create_automod_settings_embed(settings, interaction.guild.id, page=1)
+            view = AutomodSettingsView(self.db, interaction.guild, self, page=1)
+            view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        except Exception as e:
+            print("Error in handle_automod_settings:")
+            traceback.print_exc()
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="Error",
+                    description=f"Failed to load automod settings:\n**{type(e).__name__}:** {e}",
+                    color=0xE02B2B
+                ),
+                ephemeral=True
+            )
 
     async def handle_tryout_settings(self, interaction: discord.Interaction):
-        embed = await self.create_tryout_settings_embed(interaction.guild)
-        view = TryoutSettingsView(self.db, interaction.guild, self)
-        view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        try:
+            embed = await self.create_tryout_settings_embed(interaction.guild)
+            view = TryoutSettingsView(self.db, interaction.guild, self)
+            view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        except Exception as e:
+            print("Error in handle_tryout_settings:")
+            traceback.print_exc()
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="Error",
+                    description=f"Failed to load tryout settings:\n**{type(e).__name__}:** {e}",
+                    color=0xE02B2B
+                ),
+                ephemeral=True
+            )
 
     async def handle_moderation_settings(self, interaction: discord.Interaction):
-        embed = await self.create_moderation_settings_embed(interaction.guild)
-        view = ModerationSettingsView(self.db, interaction.guild, self)
-        view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        try:
+            embed = await self.create_moderation_settings_embed(interaction.guild)
+            view = ModerationSettingsView(self.db, interaction.guild, self)
+            view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        except Exception as e:
+            print("Error in handle_moderation_settings:")
+            traceback.print_exc()
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="Error",
+                    description=f"Failed to load moderation settings:\n**{type(e).__name__}:** {e}",
+                    color=0xE02B2B
+                ),
+                ephemeral=True
+            )
 
     async def create_automod_settings_embed(self, s, gid: int, page: int):
         au_status = "✅ Enabled" if s.get('automod_enabled') else "❌ Disabled"
@@ -127,13 +176,20 @@ class Settings(commands.Cog):
 
     @settings_command.error
     async def settings_error(self, interaction: discord.Interaction, error):
+        # Log the error to console with full traceback
+        print("Error in settings command:")
+        traceback.print_exc()
+
         e = discord.Embed(color=0xE02B2B)
         if isinstance(error, app_commands.MissingPermissions):
             e.title = "Missing Permissions"
             e.description = "You need Administrator permission or be the bot owner."
         else:
+            error_class = type(error).__name__
+            error_msg = str(error)
             e.title = "Error"
-            e.description = "An unexpected error occurred."
+            e.description = f"An unexpected error occurred:\n**{error_class}**: {error_msg}"
+
         if not interaction.response.is_done():
             await interaction.response.send_message(embed=e, ephemeral=True)
         else:
@@ -175,9 +231,11 @@ class BaseChannelModal(discord.ui.Modal):
                 ephemeral=True
             )
             await self.update_callback()
-        except:
+        except Exception as e:
+            print("Error in BaseChannelModal on_submit:")
+            traceback.print_exc()
             await interaction.response.send_message(
-                embed=discord.Embed(title="Error", description="Failed to set the channel.", color=0xE02B2B),
+                embed=discord.Embed(title="Error", description=f"Failed to set the channel:\n**{type(e).__name__}:** {e}", color=0xE02B2B),
                 ephemeral=True
             )
 
@@ -207,7 +265,10 @@ class BaseRoleManagementModal(discord.ui.Modal):
         for rid in ids:
             if rid.isdigit():
                 r = self.guild.get_role(int(rid))
-                valid.append(r.id if r else invalid.append(rid))
+                if r:
+                    valid.append(r.id)
+                else:
+                    invalid.append(rid)
             else:
                 invalid.append(rid)
         if invalid:
@@ -225,9 +286,11 @@ class BaseRoleManagementModal(discord.ui.Modal):
                 ephemeral=True
             )
             await self.update_callback()
-        except:
+        except Exception as e:
+            print("Error in BaseRoleManagementModal on_submit:")
+            traceback.print_exc()
             await interaction.response.send_message(
-                embed=discord.Embed(title="Error", description="Failed to manage roles.", color=0xE02B2B),
+                embed=discord.Embed(title="Error", description=f"Failed to manage roles:\n**{type(e).__name__}:** {e}", color=0xE02B2B),
                 ephemeral=True
             )
 
@@ -255,7 +318,9 @@ class ManageTryoutGroupsModal(discord.ui.Modal):
             )
         try:
             if act == 'add':
-                if not (self.event_name.value.strip() and self.description.value.strip() and self.link.value.strip()):
+                if not (self.event_name.value and self.event_name.value.strip() and 
+                        self.description.value and self.description.value.strip() and 
+                        self.link.value and self.link.value.strip()):
                     return await interaction.response.send_message(
                         embed=discord.Embed(title="Missing Info", description="Provide all fields for adding.", color=0xE02B2B),
                         ephemeral=True
@@ -297,9 +362,11 @@ class ManageTryoutGroupsModal(discord.ui.Modal):
                     ephemeral=True
                 )
             await self.update_callback()
-        except:
+        except Exception as e:
+            print("Error in ManageTryoutGroupsModal on_submit:")
+            traceback.print_exc()
             await interaction.response.send_message(
-                embed=discord.Embed(title="Error", description="Try again later.", color=0xE02B2B),
+                embed=discord.Embed(title="Error", description=f"Try again later:\n**{type(e).__name__}:** {e}", color=0xE02B2B),
                 ephemeral=True
             )
 
@@ -323,9 +390,11 @@ class AutomodMuteDurationModal(discord.ui.Modal):
                 ephemeral=True
             )
             await self.update_callback()
-        except:
+        except Exception as e:
+            print("Error in AutomodMuteDurationModal on_submit:")
+            traceback.print_exc()
             await interaction.response.send_message(
-                embed=discord.Embed(title="Error", description="Failed to set.", color=0xE02B2B),
+                embed=discord.Embed(title="Error", description=f"Failed to set mute duration:\n**{type(e).__name__}:** {e}", color=0xE02B2B),
                 ephemeral=True
             )
 
@@ -345,7 +414,10 @@ class AutomodProtectedUsersModal(BaseRoleManagementModal):
             )
         valid, invalid = [], []
         for uid in ids:
-            valid.append(int(uid)) if uid.isdigit() else invalid.append(uid)
+            if uid.isdigit():
+                valid.append(int(uid))
+            else:
+                invalid.append(uid)
         if invalid:
             return await interaction.response.send_message(
                 embed=discord.Embed(title="Invalid User IDs", description=", ".join(invalid), color=0xE02B2B),
@@ -361,9 +433,11 @@ class AutomodProtectedUsersModal(BaseRoleManagementModal):
                 ephemeral=True
             )
             await self.update_callback()
-        except:
+        except Exception as e:
+            print("Error in AutomodProtectedUsersModal on_submit:")
+            traceback.print_exc()
             await interaction.response.send_message(
-                embed=discord.Embed(title="Error", description="Failed to manage users.", color=0xE02B2B),
+                embed=discord.Embed(title="Error", description=f"Failed to manage users:\n**{type(e).__name__}:** {e}", color=0xE02B2B),
                 ephemeral=True
             )
 
@@ -398,7 +472,9 @@ class AutomodSettingsView(discord.ui.View):
                 await self.db.toggle_server_setting(self.guild.id, 'automod_enabled')
                 await self.async_update_view()
             except Exception as e:
-                embed = discord.Embed(title="Error", description=f"Failed to toggle Automod: {e}", color=0xE02B2B)
+                print("Error toggling automod:")
+                traceback.print_exc()
+                embed = discord.Embed(title="Error", description=f"Failed to toggle Automod:\n**{type(e).__name__}:** {e}", color=0xE02B2B)
                 await interaction.followup.send(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Toggle Logging", style=discord.ButtonStyle.primary, emoji="📝")
@@ -409,13 +485,14 @@ class AutomodSettingsView(discord.ui.View):
                 await self.db.toggle_server_setting(self.guild.id, 'automod_logging_enabled')
                 await self.async_update_view()
             except Exception as e:
-                embed = discord.Embed(title="Error", description=f"Failed to toggle Logging: {e}", color=0xE02B2B)
+                print("Error toggling logging:")
+                traceback.print_exc()
+                embed = discord.Embed(title="Error", description=f"Failed to toggle Logging:\n**{type(e).__name__}:** {e}", color=0xE02B2B)
                 await interaction.followup.send(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Set Log Channel", style=discord.ButtonStyle.primary, emoji="📌")
     async def set_log_channel_btn(self, interaction: discord.Interaction, _):
         if self.page == 1:
-            # Direct response with modal
             await interaction.response.send_modal(BaseChannelModal(
                 db=self.db,
                 guild=self.guild,
@@ -472,15 +549,22 @@ class AutomodSettingsView(discord.ui.View):
 
     async def async_update_view(self):
         if self.message:
-            s = await self.db.get_server_settings(self.guild.id)
-            e = await self.settings_cog.create_automod_settings_embed(s, self.guild.id, self.page)
-            await self.message.edit(embed=e, view=self)
+            try:
+                s = await self.db.get_server_settings(self.guild.id)
+                e = await self.settings_cog.create_automod_settings_embed(s, self.guild.id, self.page)
+                await self.message.edit(embed=e, view=self)
+            except Exception as e:
+                print("Error updating AutomodSettingsView:")
+                traceback.print_exc()
 
     async def on_timeout(self):
         for c in self.children:
             c.disabled = True
         if self.message:
-            await self.message.edit(view=self)
+            try:
+                await self.message.edit(view=self)
+            except:
+                pass
 
 class ModerationSettingsView(discord.ui.View):
     def __init__(self, db, guild, settings_cog):
@@ -515,14 +599,21 @@ class ModerationSettingsView(discord.ui.View):
 
     async def async_update_view(self):
         if self.message:
-            e = await self.settings_cog.create_moderation_settings_embed(self.guild)
-            await self.message.edit(embed=e, view=self)
+            try:
+                e = await self.settings_cog.create_moderation_settings_embed(self.guild)
+                await self.message.edit(embed=e, view=self)
+            except Exception as e:
+                print("Error updating ModerationSettingsView:")
+                traceback.print_exc()
 
     async def on_timeout(self):
         for c in self.children:
             c.disabled = True
         if self.message:
-            await self.message.edit(view=self)
+            try:
+                await self.message.edit(view=self)
+            except:
+                pass
 
 class TryoutSettingsView(discord.ui.View):
     def __init__(self, db, guild, settings_cog):
@@ -580,14 +671,21 @@ class TryoutSettingsView(discord.ui.View):
 
     async def async_update_view(self):
         if self.message:
-            e = await self.settings_cog.create_tryout_settings_embed(self.guild)
-            await self.message.edit(embed=e, view=self)
+            try:
+                e = await self.settings_cog.create_tryout_settings_embed(self.guild)
+                await self.message.edit(embed=e, view=self)
+            except Exception as e:
+                print("Error updating TryoutSettingsView:")
+                traceback.print_exc()
 
     async def on_timeout(self):
         for c in self.children:
             c.disabled = True
         if self.message:
-            await self.message.edit(view=self)
+            try:
+                await self.message.edit(view=self)
+            except:
+                pass
 
 async def setup(bot):
     await bot.add_cog(Settings(bot))
