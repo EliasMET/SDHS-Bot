@@ -77,6 +77,7 @@ class WarningsView(discord.ui.View):
         self.previous_button.disabled = self.current_page == 0
         self.next_button.disabled = self.current_page >= self.total_pages - 1
 
+
 class AutoMod(commands.Cog):
     """
     AutoMod Cog
@@ -136,6 +137,12 @@ class AutoMod(commands.Cog):
             # Delete the violating message
             await message.delete()
 
+            # Log violation details
+            self.bot.logger.info(
+                f"Message by {message.author} (ID: {message.author.id}) violated rules: {reason}. "
+                f"Content: {message.content}"
+            )
+
             # Log the violation to the database
             warn_id = await self.db.add_warn(
                 user_id=message.author.id,
@@ -159,11 +166,8 @@ class AutoMod(commands.Cog):
             # Fetch mute duration from settings
             server_settings = await self.get_server_settings(message.guild.id)
             automod_mute_duration = server_settings.get('automod_mute_duration', 3600)  # default 1 hour
-            # Apply timeouts based on warning count
-            # For example, you can adjust thresholds:
-            # On every 3rd warning, apply a timeout (this is just an example)
+            # On every 3rd warning, apply a timeout
             if warning_count % 3 == 0:
-                # Use the configured mute duration
                 duration = timedelta(seconds=automod_mute_duration)
                 await message.author.timeout(duration, reason=f"Reached {warning_count} warnings")
                 duration_str = str(duration)
@@ -171,6 +175,7 @@ class AutoMod(commands.Cog):
                     f"🚫 {message.author.mention} has been timed out for {duration_str} due to accumulating {warning_count} warnings."
                 )
                 await message.channel.send(timeout_notice)
+                self.bot.logger.info(f"Timed out {message.author} for {duration_str} after {warning_count} warnings.")
 
             # Delete the moderation message after 10 seconds to reduce clutter
             await asyncio.sleep(10)
@@ -190,7 +195,7 @@ class AutoMod(commands.Cog):
                         log_embed.add_field(name="User", value=message.author.mention, inline=True)
                         log_embed.add_field(name="Action", value=reason, inline=True)
                         log_embed.add_field(name="Channel", value=message.channel.mention, inline=True)
-                        log_embed.add_field(name="Reason", value=f"{reason}\n||{message.content}||", inline=False)  # Offending message in spoilers
+                        log_embed.add_field(name="Reason", value=f"{reason}\n||{message.content}||", inline=False)
                         log_embed.set_footer(text=f"User ID: {message.author.id} | Warn ID: {warn_id}")
                         await log_channel.send(embed=log_embed)
         except Exception as e:
@@ -200,40 +205,55 @@ class AutoMod(commands.Cog):
     async def on_message(self, message: discord.Message):
         """
         Listens to all messages and applies AutoMod checks.
+        Logs every message and the reason if it's not moderated.
         """
         if message.author.bot:
+            # Bot messages are ignored
+            self.bot.logger.info(
+                f"Ignored message from bot {message.author}: '{message.content}'"
+            )
             return
 
         # Check if AutoMod is enabled for this server
         server_settings = await self.get_server_settings(message.guild.id)
         if not server_settings.get('automod_enabled', True):
+            self.bot.logger.info(
+                f"Ignored message from {message.author} in {message.guild.name}#{message.channel.name}: '{message.content}' "
+                f"because automod is disabled."
+            )
             return
 
         content = message.content
 
-        # Get protected user and exempt roles from DB
-        protected_user_id = server_settings.get('protected_user_id')
+        # Get exempt roles
         exempt_roles = await self.db.get_automod_exempt_roles(message.guild.id)
+        protected_users = await self.db.get_protected_users(message.guild.id)
 
-        # Monitor mentions of the protected user if set
-        if protected_user_id and protected_user_id in [user.id for user in message.mentions]:
-            # Only the bot owner can bypass the protected user mention check
+        # Check mentions for protected users
+        mentioned_protected = [u for u in protected_users if u in [m.id for m in message.mentions]]
+
+        # Determine if the user can bypass general AutoMod
+        can_bypass_general = await self.can_bypass_general_automod(message.author)
+
+        # If user mentions protected user and isn't allowed
+        if mentioned_protected:
+            # Only the owner can bypass protected user checks, else must have exempt roles
             if not await self.is_owner(message.author):
-                # Check if the message author has any of the exempt roles
                 has_exempt_role = any(role.id in exempt_roles for role in message.author.roles)
-
                 if not has_exempt_role:
+                    self.bot.logger.info(
+                        f"Message from {message.author} mentions protected user(s) {mentioned_protected} without exempt roles. "
+                        f"Content: '{message.content}'. Initiating timeout."
+                    )
+                    # Mute the user
+                    automod_mute_duration = server_settings.get('automod_mute_duration', 3600)
+                    duration = timedelta(seconds=automod_mute_duration)
                     try:
-                        # Fetch mute duration from settings
-                        automod_mute_duration = server_settings.get('automod_mute_duration', 3600)
-                        duration = timedelta(seconds=automod_mute_duration)
-                        await message.author.timeout(duration, reason=f"Mentioned protected user {protected_user_id} without required roles.")
-
+                        await message.author.timeout(duration, reason=f"Mentioned protected user(s) without required roles")
                         timeout_message = await message.channel.send(
                             f"🚫 {message.author.mention} has been timed out for {duration} for mentioning the protected user without the necessary roles."
                         )
-
-                        # Log the timeout action if logging is enabled
+                        # Log the action
                         if server_settings.get('automod_logging_enabled'):
                             log_channel_id = server_settings.get('automod_log_channel_id')
                             if log_channel_id:
@@ -251,28 +271,46 @@ class AutoMod(commands.Cog):
                                     log_embed.set_footer(text=f"User ID: {message.author.id}")
                                     await log_channel.send(embed=log_embed)
 
-                        # Optionally, delete the timeout message after some time to reduce clutter
                         await asyncio.sleep(10)
                         await timeout_message.delete()
                     except discord.Forbidden:
                         self.bot.logger.error(f"Missing permissions to timeout user {message.author.id}.")
                     except Exception as e:
                         self.bot.logger.error(f"Failed to timeout user {message.author.id}: {e}")
+                    return
+                else:
+                    self.bot.logger.info(
+                        f"Message from {message.author} mentions protected user(s) {mentioned_protected} "
+                        f"but user has exempt roles. Not moderated. Content: '{message.content}'"
+                    )
+            else:
+                self.bot.logger.info(
+                    f"Message from {message.author} mentions protected user(s) {mentioned_protected} "
+                    f"but user is the bot owner, bypassing moderation. Content: '{message.content}'"
+                )
+        # If no protected user issues
+        # Check general bypass (owner/admin)
+        if can_bypass_general:
+            self.bot.logger.info(
+                f"Message from {message.author}: '{message.content}' not moderated because user can bypass general automod."
+            )
+            return
 
-        # Determine if the user can bypass general AutoMod checks
-        can_bypass_general = await self.can_bypass_general_automod(message.author)
-
-        # Existing AutoMod checks (profanity, links, etc.)
-        if not can_bypass_general:
-            try:
-                if self.roblox_group_regex.search(content):
-                    await self.handle_message_violation(message, "Posting Roblox group links.")
-                elif self.discord_invite_regex.search(content):
-                    await self.handle_message_violation(message, "Posting Discord invite links.")
-                elif self.profanity_pattern and self.profanity_pattern.search(content):
-                    await self.handle_message_violation(message, "Using prohibited language.")
-            except Exception as e:
-                self.bot.logger.error(f"Error during AutoMod checks: {e}")
+        # Check general filters
+        try:
+            if self.roblox_group_regex.search(content):
+                await self.handle_message_violation(message, "Posting Roblox group links.")
+            elif self.discord_invite_regex.search(content):
+                await self.handle_message_violation(message, "Posting Discord invite links.")
+            elif self.profanity_pattern and self.profanity_pattern.search(content):
+                await self.handle_message_violation(message, "Using prohibited language.")
+            else:
+                # If message reached here, it is not moderated.
+                self.bot.logger.info(
+                    f"Message from {message.author}: '{message.content}' not moderated because it did not match any prohibited patterns."
+                )
+        except Exception as e:
+            self.bot.logger.error(f"Error during AutoMod checks for message '{message.content}' from {message.author}: {e}")
 
     async def get_server_settings(self, guild_id: int):
         """
@@ -294,9 +332,6 @@ class AutoMod(commands.Cog):
     async def is_owner(self, member: discord.Member) -> bool:
         """
         Checks if the member is the bot owner.
-
-        :param member: The Discord member to check.
-        :return: True if the member is the bot owner, False otherwise.
         """
         if not hasattr(self.bot, 'owner_id'):
             try:
@@ -305,16 +340,12 @@ class AutoMod(commands.Cog):
             except Exception as e:
                 self.bot.logger.error(f"Failed to fetch application info: {e}")
                 return False
-
         return member.id == self.bot.owner_id
 
     async def can_bypass_general_automod(self, member: discord.Member) -> bool:
         """
         Determines if a member can bypass general AutoMod checks (profanity, links, etc.).
         Only admins and the bot owner can bypass.
-
-        :param member: The Discord member to check.
-        :return: True if the member can bypass general AutoMod checks, False otherwise.
         """
         if await self.is_owner(member):
             return True
@@ -430,7 +461,6 @@ class AutoMod(commands.Cog):
 
             # Check if the warning count triggers any automatic actions
             warning_count = await self.db.count_warnings(user_id=user.id, server_id=interaction.guild.id)
-            # Fetch mute duration from settings
             server_settings = await self.get_server_settings(interaction.guild.id)
             automod_mute_duration = server_settings.get('automod_mute_duration', 3600)
 
@@ -504,13 +534,13 @@ class AutoMod(commands.Cog):
                     timestamp=datetime.utcnow()
                 )
                 for warn in warnings:
-                    warn_id, reason, moderator_id, timestamp = warn  # Unpack the tuple
+                    warn_id, reason, moderator_id, timestamp_val = warn
                     embed.add_field(
                         name=f"Warning ID: {warn_id}",
                         value=(
                             f"**Reason:** {reason}\n"
                             f"**Moderator:** <@{moderator_id}>\n"
-                            f"**Date:** <t:{int(timestamp)}:F>"
+                            f"**Date:** <t:{int(timestamp_val)}:F>"
                         ),
                         inline=False,
                     )
