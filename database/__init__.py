@@ -2,433 +2,653 @@ import aiosqlite
 import logging
 
 class DatabaseManager:
-    CREATE_TABLE_QUERIES = {
-        "warns": """
-            CREATE TABLE IF NOT EXISTS warns (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT NOT NULL,
-                server_id TEXT NOT NULL,
-                moderator_id TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-        """,
-        "server_settings": """
-            CREATE TABLE IF NOT EXISTS server_settings (
-                server_id TEXT PRIMARY KEY,
-                automod_enabled INTEGER NOT NULL DEFAULT 1,
-                automod_logging_enabled INTEGER NOT NULL DEFAULT 0,
-                automod_log_channel_id TEXT,
-                tryout_channel_id TEXT,
-                mod_log_channel_id TEXT,
-                automod_mute_duration INTEGER NOT NULL DEFAULT 3600
-            );
-        """,
-        "moderation_allowed_roles": """
-            CREATE TABLE IF NOT EXISTS moderation_allowed_roles (
-                server_id TEXT NOT NULL,
-                role_id TEXT NOT NULL,
-                PRIMARY KEY (server_id, role_id)
-            );
-        """,
-        "tryout_groups": """
-            CREATE TABLE IF NOT EXISTS tryout_groups (
-                server_id TEXT NOT NULL,
-                group_id TEXT NOT NULL,
-                description TEXT NOT NULL,
-                link TEXT NOT NULL,
-                event_name TEXT NOT NULL,
-                PRIMARY KEY (server_id, group_id)
-            );
-        """,
-        "tryout_required_roles": """
-            CREATE TABLE IF NOT EXISTS tryout_required_roles (
-                server_id TEXT NOT NULL,
-                role_id TEXT NOT NULL,
-                PRIMARY KEY (server_id, role_id)
-            );
-        """,
-        "tryout_settings": """
-            CREATE TABLE IF NOT EXISTS tryout_settings (
-                server_id TEXT PRIMARY KEY,
-                tryout_channel_id TEXT
-            );
-        """,
-        "locked_channels": """
-            CREATE TABLE IF NOT EXISTS locked_channels (
-                server_id TEXT NOT NULL,
-                channel_id TEXT NOT NULL,
-                PRIMARY KEY (server_id, channel_id)
-            );
-        """,
-        "ping_roles": """
-            CREATE TABLE IF NOT EXISTS ping_roles (
-                server_id TEXT NOT NULL,
-                role_id TEXT NOT NULL,
-                PRIMARY KEY (server_id, role_id)
-            );
-        """,
-        "automod_protected_users": """
-            CREATE TABLE IF NOT EXISTS automod_protected_users (
-                server_id TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                PRIMARY KEY (server_id, user_id)
-            );
-        """,
-        "automod_exempt_roles": """
-            CREATE TABLE IF NOT EXISTS automod_exempt_roles (
-                server_id TEXT NOT NULL,
-                role_id TEXT NOT NULL,
-                PRIMARY KEY (server_id, role_id)
-            );
-        """
-    }
-
-    # Columns we expect in server_settings and their SQL definitions
-    REQUIRED_COLUMNS = {
-        "server_settings": {
-            "server_id": "TEXT PRIMARY KEY",
-            "automod_enabled": "INTEGER NOT NULL DEFAULT 1",
-            "automod_logging_enabled": "INTEGER NOT NULL DEFAULT 0",
-            "automod_log_channel_id": "TEXT",
-            "tryout_channel_id": "TEXT",
-            "mod_log_channel_id": "TEXT",
-            "automod_mute_duration": "INTEGER NOT NULL DEFAULT 3600"
-        }
-    }
-
     def __init__(self, *, connection: aiosqlite.Connection) -> None:
         self.connection = connection
         self.logger = logging.getLogger('DatabaseManager')
 
-    async def ensure_columns_exist(self, table: str, columns: dict):
-        """
-        Ensure all columns in `columns` exist in `table`.
-        If a column is missing, add it using ALTER TABLE.
-        """
-        try:
-            self.logger.info(f"Checking columns for table '{table}'...")
-            async with self.connection.execute(f"PRAGMA table_info({table})") as cursor:
-                existing_cols = await cursor.fetchall()
-            existing_col_names = [col[1] for col in existing_cols]
-
-            for col_name, col_def in columns.items():
-                if col_name not in existing_col_names:
-                    self.logger.info(f"Column '{col_name}' not found in '{table}'. Adding it with definition '{col_def}'.")
-                    await self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
-                    await self.connection.commit()
-                else:
-                    self.logger.info(f"Column '{col_name}' already exists in '{table}'.")
-
-        except Exception as e:
-            self.logger.error(f"Failed to ensure columns exist for {table}: {e}")
-            raise
-
     async def initialize_database(self):
+        """
+        Initializes the database by creating necessary tables if they do not exist.
+        """
         try:
-            self.logger.info("Initializing database tables...")
-            for query in self.CREATE_TABLE_QUERIES.values():
-                await self.connection.execute(query)
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS warns (
+                    id INTEGER PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    moderator_id TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+            """)
+
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS server_settings (
+                    server_id TEXT PRIMARY KEY,
+                    automod_enabled INTEGER NOT NULL DEFAULT 1,
+                    automod_logging_enabled INTEGER NOT NULL DEFAULT 0,
+                    automod_log_channel_id TEXT,
+                    tryout_channel_id TEXT,
+                    mod_log_channel_id TEXT
+                );
+            """)
+
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS moderation_allowed_roles (
+                    server_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    PRIMARY KEY (server_id, role_id)
+                );
+            """)
+
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS tryout_groups (
+                    server_id TEXT NOT NULL,
+                    group_id TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    link TEXT NOT NULL,
+                    event_name TEXT NOT NULL,
+                    PRIMARY KEY (server_id, group_id)
+                );
+            """)
+
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS tryout_required_roles (
+                    server_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    PRIMARY KEY (server_id, role_id)
+                );
+            """)
+
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS tryout_settings (
+                    server_id TEXT NOT NULL PRIMARY KEY,
+                    tryout_channel_id TEXT
+                );
+            """)
+
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS locked_channels (
+                    server_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    PRIMARY KEY (server_id, channel_id)
+                );
+            """)
+
+            # New Table for Ping Roles (Under Tryouts)
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS ping_roles (
+                    server_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    PRIMARY KEY (server_id, role_id)
+                );
+            """)
+
+            # New Table for Automod Exempt Roles
+            await self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS automod_exempt_roles (
+                    server_id TEXT NOT NULL,
+                    role_id TEXT NOT NULL,
+                    PRIMARY KEY (server_id, role_id)
+                );
+            """)
+
             await self.connection.commit()
-
-            if "server_settings" in self.REQUIRED_COLUMNS:
-                await self.ensure_columns_exist("server_settings", self.REQUIRED_COLUMNS["server_settings"])
-
             self.logger.info("Database initialized and tables ensured.")
         except Exception as e:
             self.logger.error(f"Failed to initialize database: {e}")
             raise RuntimeError(f"Failed to initialize database: {e}")
 
     # ---------------------------
-    # Generic Helpers
+    # Methods for Managing Warns
     # ---------------------------
-    async def fetchone(self, query, params=()):
-        try:
-            async with self.connection.execute(query, params) as cursor:
-                return await cursor.fetchone()
-        except Exception as e:
-            self.logger.error(f"fetchone error: {e}")
-            raise
 
-    async def fetchall(self, query, params=()):
-        try:
-            async with self.connection.execute(query, params) as cursor:
-                return await cursor.fetchall()
-        except Exception as e:
-            self.logger.error(f"fetchall error: {e}")
-            raise
-
-    async def execute(self, query, params=(), commit=True):
-        try:
-            cursor = await self.connection.execute(query, params)
-            if commit:
-                await self.connection.commit()
-            return cursor
-        except Exception as e:
-            self.logger.error(f"execute error: {e}")
-            raise
-
-    # ---------------------------
-    # Warn Methods
-    # ---------------------------
     async def add_warn(self, user_id: int, server_id: int, moderator_id: int, reason: str) -> int:
-        cursor = await self.execute(
-            "INSERT INTO warns(user_id, server_id, moderator_id, reason, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-            (str(user_id), str(server_id), str(moderator_id), reason)
-        )
-        return cursor.lastrowid
+        try:
+            async with self.connection.execute(
+                "SELECT MAX(id) FROM warns WHERE user_id=? AND server_id=?",
+                (str(user_id), str(server_id)),
+            ) as cursor:
+                result = await cursor.fetchone()
+                warn_id = (result[0] or 0) + 1
+            await self.connection.execute(
+                "INSERT INTO warns(id, user_id, server_id, moderator_id, reason, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                (warn_id, str(user_id), str(server_id), str(moderator_id), reason),
+            )
+            await self.connection.commit()
+            self.logger.info(f"Added warn ID {warn_id} for user {user_id} in server {server_id}.")
+            return warn_id
+        except Exception as e:
+            self.logger.error(f"Failed to add warn: {e}")
+            raise RuntimeError(f"Failed to add warn: {e}")
 
     async def remove_warn(self, warn_id: int, user_id: int, server_id: int) -> bool:
-        cursor = await self.execute(
-            "DELETE FROM warns WHERE id=? AND user_id=? AND server_id=?",
-            (warn_id, str(user_id), str(server_id))
-        )
-        return cursor.rowcount > 0
+        try:
+            async with self.connection.execute(
+                "DELETE FROM warns WHERE id=? AND user_id=? AND server_id=?",
+                (warn_id, str(user_id), str(server_id)),
+            ) as cursor:
+                await self.connection.commit()
+                removed = cursor.rowcount > 0
+                self.logger.info(f"Removed warn ID {warn_id} for user {user_id} in server {server_id}: {removed}")
+                return removed
+        except Exception as e:
+            self.logger.error(f"Failed to remove warn: {e}")
+            raise RuntimeError(f"Failed to remove warn: {e}")
+
+    async def get_all_warnings(self) -> list:
+        try:
+            async with self.connection.execute(
+                "SELECT user_id, server_id, moderator_id, reason, strftime('%s', created_at), id FROM warns"
+            ) as cursor:
+                warnings = await cursor.fetchall()
+                self.logger.info(f"Fetched all warnings: {len(warnings)} records found.")
+                return warnings
+        except Exception as e:
+            self.logger.error(f"Failed to fetch all warnings: {e}")
+            raise RuntimeError(f"Failed to fetch all warnings: {e}")
 
     async def get_warnings(self, user_id: int, server_id: int) -> list:
-        return await self.fetchall(
-            "SELECT id, reason, moderator_id, strftime('%s', created_at) FROM warns WHERE user_id=? AND server_id=?",
-            (str(user_id), str(server_id))
-        )
+        try:
+            async with self.connection.execute(
+                "SELECT user_id, server_id, moderator_id, reason, strftime('%s', created_at), id FROM warns WHERE user_id=? AND server_id=?",
+                (str(user_id), str(server_id)),
+            ) as cursor:
+                warnings = await cursor.fetchall()
+                self.logger.info(f"Fetched {len(warnings)} warnings for user {user_id} in server {server_id}.")
+                return warnings
+        except Exception as e:
+            self.logger.error(f"Failed to fetch warnings: {e}")
+            raise RuntimeError(f"Failed to fetch warnings: {e}")
 
     async def clear_all_warnings(self, user_id: int, server_id: int) -> int:
-        cursor = await self.execute(
-            "DELETE FROM warns WHERE user_id=? AND server_id=?",
-            (str(user_id), str(server_id))
-        )
-        return cursor.rowcount
+        try:
+            async with self.connection.execute(
+                "DELETE FROM warns WHERE user_id=? AND server_id=?", (str(user_id), str(server_id))
+            ) as cursor:
+                await self.connection.commit()
+                removed = cursor.rowcount
+                self.logger.info(f"Cleared {removed} warnings for user {user_id} in server {server_id}.")
+                return removed
+        except Exception as e:
+            self.logger.error(f"Failed to clear all warnings: {e}")
+            raise RuntimeError(f"Failed to clear all warnings: {e}")
 
     async def count_warnings(self, user_id: int, server_id: int) -> int:
-        result = await self.fetchone(
-            "SELECT COUNT(*) FROM warns WHERE user_id=? AND server_id=?",
-            (str(user_id), str(server_id))
-        )
-        return result[0] if result else 0
+        try:
+            async with self.connection.execute(
+                "SELECT COUNT(*) FROM warns WHERE user_id=? AND server_id=?",
+                (str(user_id), str(server_id)),
+            ) as cursor:
+                result = await cursor.fetchone()
+                count = result[0] if result else 0
+                self.logger.info(f"User {user_id} has {count} warnings in server {server_id}.")
+                return count
+        except Exception as e:
+            self.logger.error(f"Failed to count warnings: {e}")
+            raise RuntimeError(f"Failed to count warnings: {e}")
 
     async def remove_expired_warnings(self, expiration_timestamp: int) -> int:
-        cursor = await self.execute(
-            "DELETE FROM warns WHERE strftime('%s', created_at) < ?",
-            (str(expiration_timestamp),)
-        )
-        return cursor.rowcount
+        try:
+            async with self.connection.execute(
+                "DELETE FROM warns WHERE strftime('%s', created_at) < ?",
+                (str(expiration_timestamp),),
+            ) as cursor:
+                await self.connection.commit()
+                removed = cursor.rowcount
+                self.logger.info(f"Removed {removed} expired warnings older than timestamp {expiration_timestamp}.")
+                return removed
+        except Exception as e:
+            self.logger.error(f"Failed to remove expired warnings: {e}")
+            raise RuntimeError(f"Failed to remove expired warnings: {e}")
 
     # ---------------------------
-    # Server Settings
+    # Methods for Server Settings
     # ---------------------------
+
     async def initialize_server_settings(self, server_id: int):
-        await self.execute(
-            """INSERT OR IGNORE INTO server_settings (
-                server_id, automod_enabled, automod_logging_enabled, automod_log_channel_id, tryout_channel_id, mod_log_channel_id, automod_mute_duration
-            ) VALUES (?, 1, 0, NULL, NULL, NULL, 3600)""",
-            (str(server_id),)
-        )
+        try:
+            await self.connection.execute(
+                "INSERT OR IGNORE INTO server_settings (server_id, automod_enabled, automod_logging_enabled, automod_log_channel_id, tryout_channel_id, mod_log_channel_id) VALUES (?, 1, 0, NULL, NULL, NULL)",
+                (str(server_id),)
+            )
+            await self.connection.commit()
+            self.logger.info(f"Initialized server settings for server {server_id}.")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize server settings: {e}")
+            raise RuntimeError(f"Failed to initialize server settings: {e}")
 
     async def get_server_settings(self, server_id: int) -> dict:
-        result = await self.fetchone(
-            "SELECT automod_enabled, automod_logging_enabled, automod_log_channel_id, tryout_channel_id, mod_log_channel_id, automod_mute_duration FROM server_settings WHERE server_id=?",
-            (str(server_id),)
-        )
-        if result:
-            return {
-                'automod_enabled': bool(result[0]),
-                'automod_logging_enabled': bool(result[1]),
-                'automod_log_channel_id': int(result[2]) if result[2] else None,
-                'tryout_channel_id': int(result[3]) if result[3] else None,
-                'mod_log_channel_id': int(result[4]) if result[4] else None,
-                'automod_mute_duration': int(result[5]) if result[5] else 3600
-            }
-        # If no row found for this server, initialize defaults
-        await self.initialize_server_settings(server_id)
-        return {
-            'automod_enabled': True,
-            'automod_logging_enabled': False,
-            'automod_log_channel_id': None,
-            'tryout_channel_id': None,
-            'mod_log_channel_id': None,
-            'automod_mute_duration': 3600
-        }
+        try:
+            async with self.connection.execute(
+                "SELECT automod_enabled, automod_logging_enabled, automod_log_channel_id, tryout_channel_id, mod_log_channel_id FROM server_settings WHERE server_id=?",
+                (str(server_id),)
+            ) as cursor:
+                result = await cursor.fetchone()
+                if result:
+                    settings = {
+                        'automod_enabled': bool(result[0]),
+                        'automod_logging_enabled': bool(result[1]),
+                        'automod_log_channel_id': int(result[2]) if result[2] else None,
+                        'tryout_channel_id': int(result[3]) if result[3] else None,
+                        'mod_log_channel_id': int(result[4]) if result[4] else None
+                    }
+                    self.logger.info(f"Fetched server settings for server {server_id}: {settings}")
+                    return settings
+                else:
+                    # Initialize settings if they do not exist
+                    await self.initialize_server_settings(server_id)
+                    default_settings = {
+                        'automod_enabled': True,
+                        'automod_logging_enabled': False,
+                        'automod_log_channel_id': None,
+                        'tryout_channel_id': None,
+                        'mod_log_channel_id': None
+                    }
+                    self.logger.info(f"Initialized and fetched default server settings for server {server_id}: {default_settings}")
+                    return default_settings
+        except Exception as e:
+            self.logger.error(f"Failed to get server settings: {e}")
+            raise RuntimeError(f"Failed to get server settings: {e}")
 
     async def update_server_setting(self, server_id: int, setting_name: str, value):
-        await self.execute(
-            f"UPDATE server_settings SET {setting_name} = ? WHERE server_id = ?",
-            (str(value) if value is not None else None, str(server_id))
-        )
+        try:
+            query = f"UPDATE server_settings SET {setting_name} = ? WHERE server_id = ?"
+            await self.connection.execute(query, (str(value) if value is not None else None, str(server_id)))
+            await self.connection.commit()
+            self.logger.info(f"Updated server setting '{setting_name}' for server {server_id} to '{value}'.")
+        except Exception as e:
+            self.logger.error(f"Failed to update server setting '{setting_name}': {e}")
+            raise RuntimeError(f"Failed to update server setting '{setting_name}': {e}")
 
     async def toggle_server_setting(self, server_id: int, setting_name: str):
-        current_settings = await self.get_server_settings(server_id)
-        current_value = current_settings.get(setting_name)
-        if isinstance(current_value, bool):
-            new_value = int(not current_value)
-        else:
-            new_value = 0 if current_value else 1
-        await self.update_server_setting(server_id, setting_name, new_value)
-
-    async def get_automod_mute_duration(self, server_id: int) -> int:
-        settings = await self.get_server_settings(server_id)
-        return settings.get('automod_mute_duration', 3600)
-
-    async def set_automod_mute_duration(self, server_id: int, duration: int):
-        await self.update_server_setting(server_id, 'automod_mute_duration', duration)
-
-    # ---------------------------
-    # Generic methods for role-like tables
-    # ---------------------------
-    async def get_roles(self, server_id: int, table: str) -> list:
-        rows = await self.fetchall(f"SELECT role_id FROM {table} WHERE server_id = ?", (str(server_id),))
-        return [int(r[0]) for r in rows]
-
-    async def add_role(self, server_id: int, role_id: int, table: str):
         try:
-            await self.execute(
-                f"INSERT INTO {table} (server_id, role_id) VALUES (?, ?)",
-                (str(server_id), str(role_id))
-            )
-        except aiosqlite.IntegrityError:
-            pass
+            current_settings = await self.get_server_settings(server_id)
+            current_value = current_settings.get(setting_name)
+            if isinstance(current_value, bool):
+                new_value = int(not current_value)
+            elif isinstance(current_value, (int, float)):
+                new_value = 0 if current_value else 1
+            else:
+                new_value = 1  # Default toggle
+            await self.update_server_setting(server_id, setting_name, new_value)
+            self.logger.info(f"Toggled server setting '{setting_name}' for server {server_id} to '{new_value}'.")
+        except Exception as e:
+            self.logger.error(f"Failed to toggle server setting '{setting_name}': {e}")
+            raise RuntimeError(f"Failed to toggle server setting '{setting_name}': {e}")
 
-    async def remove_role(self, server_id: int, role_id: int, table: str):
-        await self.execute(
-            f"DELETE FROM {table} WHERE server_id = ? AND role_id = ?",
-            (str(server_id), str(role_id))
-        )
+    # ---------------------------
+    # Methods for Moderation Allowed Roles
+    # ---------------------------
 
-    # Moderation Allowed Roles
-    async def get_moderation_allowed_roles(self, server_id: int):
-        return await self.get_roles(server_id, "moderation_allowed_roles")
+    async def get_moderation_allowed_roles(self, server_id: int) -> list:
+        try:
+            async with self.connection.execute(
+                "SELECT role_id FROM moderation_allowed_roles WHERE server_id = ?",
+                (str(server_id),)
+            ) as cursor:
+                roles = await cursor.fetchall()
+                role_ids = [int(role[0]) for role in roles]
+                self.logger.info(f"Fetched moderation allowed roles for server {server_id}: {role_ids}")
+                return role_ids
+        except Exception as e:
+            self.logger.error(f"Failed to get moderation allowed roles: {e}")
+            raise RuntimeError(f"Failed to get moderation allowed roles: {e}")
 
     async def add_moderation_allowed_role(self, server_id: int, role_id: int):
-        await self.add_role(server_id, role_id, "moderation_allowed_roles")
+        try:
+            await self.connection.execute(
+                "INSERT INTO moderation_allowed_roles (server_id, role_id) VALUES (?, ?)",
+                (str(server_id), str(role_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Added role {role_id} to moderation allowed roles in server {server_id}.")
+        except aiosqlite.IntegrityError:
+            self.logger.warning(f"Role {role_id} already exists in moderation allowed roles for server {server_id}.")
+        except Exception as e:
+            self.logger.error(f"Failed to add moderation allowed role: {e}")
+            raise RuntimeError(f"Failed to add moderation allowed role: {e}")
 
     async def remove_moderation_allowed_role(self, server_id: int, role_id: int):
-        await self.remove_role(server_id, role_id, "moderation_allowed_roles")
+        try:
+            await self.connection.execute(
+                "DELETE FROM moderation_allowed_roles WHERE server_id = ? AND role_id = ?",
+                (str(server_id), str(role_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Removed role {role_id} from moderation allowed roles in server {server_id}.")
+        except Exception as e:
+            self.logger.error(f"Failed to remove moderation allowed role: {e}")
+            raise RuntimeError(f"Failed to remove moderation allowed role: {e}")
+
+    # ---------------------------
+    # Methods for Moderation Log Channel
+    # ---------------------------
 
     async def set_mod_log_channel(self, server_id: int, channel_id: int):
-        await self.update_server_setting(server_id, 'mod_log_channel_id', channel_id)
+        try:
+            await self.connection.execute(
+                "UPDATE server_settings SET mod_log_channel_id = ? WHERE server_id = ?",
+                (str(channel_id), str(server_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Set moderation log channel to {channel_id} for server {server_id}.")
+        except Exception as e:
+            self.logger.error(f"Failed to set moderation log channel: {e}")
+            raise RuntimeError(f"Failed to set moderation log channel: {e}")
 
     async def get_mod_log_channel(self, server_id: int) -> int:
-        result = await self.fetchone(
-            "SELECT mod_log_channel_id FROM server_settings WHERE server_id = ?",
-            (str(server_id),)
-        )
-        return int(result[0]) if result and result[0] else None
+        try:
+            async with self.connection.execute(
+                "SELECT mod_log_channel_id FROM server_settings WHERE server_id = ?",
+                (str(server_id),)
+            ) as cursor:
+                result = await cursor.fetchone()
+                mod_log_channel_id = int(result[0]) if result and result[0] else None
+                self.logger.info(f"Fetched moderation log channel ID for server {server_id}: {mod_log_channel_id}")
+                return mod_log_channel_id
+        except Exception as e:
+            self.logger.error(f"Failed to get moderation log channel: {e}")
+            raise RuntimeError(f"Failed to get moderation log channel: {e}")
 
-    # Tryout Groups
+    # ---------------------------
+    # Methods for Tryout Groups
+    # ---------------------------
+
     async def get_tryout_groups(self, server_id: int) -> list:
-        return await self.fetchall(
-            "SELECT group_id, description, link, event_name FROM tryout_groups WHERE server_id = ?",
-            (str(server_id),)
-        )
+        try:
+            async with self.connection.execute(
+                "SELECT group_id, description, link, event_name FROM tryout_groups WHERE server_id = ?",
+                (str(server_id),)
+            ) as cursor:
+                groups = await cursor.fetchall()
+                self.logger.info(f"Fetched {len(groups)} tryout groups for server {server_id}.")
+                return groups
+        except Exception as e:
+            self.logger.error(f"Failed to get tryout groups: {e}")
+            raise RuntimeError(f"Failed to get tryout groups: {e}")
 
     async def get_tryout_group(self, server_id: int, group_id: str):
-        return await self.fetchone(
-            "SELECT group_id, description, link, event_name FROM tryout_groups WHERE server_id = ? AND group_id = ?",
-            (str(server_id), group_id)
-        )
+        try:
+            async with self.connection.execute(
+                "SELECT group_id, description, link, event_name FROM tryout_groups WHERE server_id = ? AND group_id = ?",
+                (str(server_id), group_id)
+            ) as cursor:
+                group = await cursor.fetchone()
+                self.logger.info(f"Fetched tryout group '{group_id}' for server {server_id}: {group}")
+                return group
+        except Exception as e:
+            self.logger.error(f"Failed to get tryout group: {e}")
+            raise RuntimeError(f"Failed to get tryout group: {e}")
 
     async def add_tryout_group(self, server_id: int, group_id: str, description: str, link: str, event_name: str):
-        await self.execute(
-            "INSERT INTO tryout_groups (server_id, group_id, description, link, event_name) VALUES (?, ?, ?, ?, ?)",
-            (str(server_id), group_id, description, link, event_name)
-        )
+        try:
+            await self.connection.execute(
+                "INSERT INTO tryout_groups (server_id, group_id, description, link, event_name) VALUES (?, ?, ?, ?, ?)",
+                (str(server_id), group_id, description, link, event_name)
+            )
+            await self.connection.commit()
+            self.logger.info(f"Added tryout group '{group_id}' for server {server_id}.")
+        except aiosqlite.IntegrityError:
+            self.logger.warning(f"Tryout group '{group_id}' already exists in server {server_id}.")
+            raise RuntimeError(f"Tryout group '{group_id}' already exists.")
+        except Exception as e:
+            self.logger.error(f"Failed to add tryout group: {e}")
+            raise RuntimeError(f"Failed to add tryout group: {e}")
 
     async def update_tryout_group(self, server_id: int, group_id: str, description: str, link: str, event_name: str):
-        await self.execute(
-            "UPDATE tryout_groups SET description = ?, link = ?, event_name = ? WHERE server_id = ? AND group_id = ?",
-            (description, link, event_name, str(server_id), group_id)
-        )
+        try:
+            await self.connection.execute(
+                "UPDATE tryout_groups SET description = ?, link = ?, event_name = ? WHERE server_id = ? AND group_id = ?",
+                (description, link, event_name, str(server_id), group_id)
+            )
+            await self.connection.commit()
+            self.logger.info(f"Updated tryout group '{group_id}' for server {server_id}.")
+        except Exception as e:
+            self.logger.error(f"Failed to update tryout group: {e}")
+            raise RuntimeError(f"Failed to update tryout group: {e}")
 
     async def delete_tryout_group(self, server_id: int, group_id: str):
-        await self.execute(
-            "DELETE FROM tryout_groups WHERE server_id = ? AND group_id = ?",
-            (str(server_id), group_id)
-        )
+        try:
+            await self.connection.execute(
+                "DELETE FROM tryout_groups WHERE server_id = ? AND group_id = ?",
+                (str(server_id), group_id)
+            )
+            await self.connection.commit()
+            self.logger.info(f"Deleted tryout group '{group_id}' from server {server_id}.")
+        except Exception as e:
+            self.logger.error(f"Failed to delete tryout group: {e}")
+            raise RuntimeError(f"Failed to delete tryout group: {e}")
 
-    # Tryout required roles
+    # ---------------------------
+    # Methods for Tryout Required Roles
+    # ---------------------------
+
     async def get_tryout_required_roles(self, server_id: int) -> list:
-        return await self.get_roles(server_id, "tryout_required_roles")
+        try:
+            async with self.connection.execute(
+                "SELECT role_id FROM tryout_required_roles WHERE server_id = ?",
+                (str(server_id),)
+            ) as cursor:
+                roles = await cursor.fetchall()
+                role_ids = [int(role[0]) for role in roles]
+                self.logger.info(f"Fetched {len(role_ids)} tryout required roles for server {server_id}.")
+                return role_ids
+        except Exception as e:
+            self.logger.error(f"Failed to get tryout required roles: {e}")
+            raise RuntimeError(f"Failed to get tryout required roles: {e}")
 
     async def add_tryout_required_role(self, server_id: int, role_id: int):
-        await self.add_role(server_id, role_id, "tryout_required_roles")
+        try:
+            await self.connection.execute(
+                "INSERT INTO tryout_required_roles (server_id, role_id) VALUES (?, ?)",
+                (str(server_id), str(role_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Added tryout required role {role_id} to server {server_id}.")
+        except aiosqlite.IntegrityError:
+            self.logger.warning(f"Tryout required role {role_id} already exists in server {server_id}.")
+            raise RuntimeError(f"Tryout required role {role_id} already exists.")
+        except Exception as e:
+            self.logger.error(f"Failed to add tryout required role: {e}")
+            raise RuntimeError(f"Failed to add tryout required role: {e}")
 
     async def remove_tryout_required_role(self, server_id: int, role_id: int):
-        await self.remove_role(server_id, role_id, "tryout_required_roles")
+        try:
+            await self.connection.execute(
+                "DELETE FROM tryout_required_roles WHERE server_id = ? AND role_id = ?",
+                (str(server_id), str(role_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Removed tryout required role {role_id} from server {server_id}.")
+        except Exception as e:
+            self.logger.error(f"Failed to remove tryout required role: {e}")
+            raise RuntimeError(f"Failed to remove tryout required role: {e}")
+
+    # ---------------------------
+    # Methods for Tryout Settings
+    # ---------------------------
 
     async def get_tryout_channel_id(self, server_id: int) -> int:
-        result = await self.fetchone(
-            "SELECT tryout_channel_id FROM tryout_settings WHERE server_id = ?",
-            (str(server_id),)
-        )
-        return int(result[0]) if result and result[0] else None
+        try:
+            async with self.connection.execute(
+                "SELECT tryout_channel_id FROM tryout_settings WHERE server_id = ?",
+                (str(server_id),)
+            ) as cursor:
+                result = await cursor.fetchone()
+                tryout_channel_id = int(result[0]) if result and result[0] else None
+                self.logger.info(f"Fetched tryout channel ID for server {server_id}: {tryout_channel_id}")
+                return tryout_channel_id
+        except Exception as e:
+            self.logger.error(f"Failed to get tryout channel ID: {e}")
+            raise RuntimeError(f"Failed to get tryout channel ID: {e}")
 
     async def set_tryout_channel_id(self, server_id: int, channel_id: int):
-        await self.execute(
-            "INSERT OR REPLACE INTO tryout_settings (server_id, tryout_channel_id) VALUES (?, ?)",
-            (str(server_id), str(channel_id))
-        )
+        try:
+            await self.connection.execute(
+                "INSERT OR REPLACE INTO tryout_settings (server_id, tryout_channel_id) VALUES (?, ?)",
+                (str(server_id), str(channel_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Set tryout channel ID to {channel_id} for server {server_id}.")
+        except Exception as e:
+            self.logger.error(f"Failed to set tryout channel: {e}")
+            raise RuntimeError(f"Failed to set tryout channel: {e}")
 
-    # Ping roles
+    # ---------------------------
+    # Methods for Ping Roles (Under Tryouts)
+    # ---------------------------
+
     async def get_ping_roles(self, server_id: int) -> list:
-        return await self.get_roles(server_id, "ping_roles")
+        try:
+            async with self.connection.execute(
+                "SELECT role_id FROM ping_roles WHERE server_id = ?",
+                (str(server_id),)
+            ) as cursor:
+                roles = await cursor.fetchall()
+                role_ids = [int(role[0]) for role in roles]
+                self.logger.info(f"Fetched {len(role_ids)} ping roles for server {server_id}.")
+                return role_ids
+        except Exception as e:
+            self.logger.error(f"Failed to get ping roles: {e}")
+            raise RuntimeError(f"Failed to get ping roles: {e}")
 
     async def add_ping_role(self, server_id: int, role_id: int):
-        await self.add_role(server_id, role_id, "ping_roles")
+        try:
+            await self.connection.execute(
+                "INSERT INTO ping_roles (server_id, role_id) VALUES (?, ?)",
+                (str(server_id), str(role_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Added ping role {role_id} to server {server_id}.")
+        except aiosqlite.IntegrityError:
+            self.logger.warning(f"Ping role {role_id} already exists in server {server_id}.")
+            raise RuntimeError(f"Ping role {role_id} already exists.")
+        except Exception as e:
+            self.logger.error(f"Failed to add ping role: {e}")
+            raise RuntimeError(f"Failed to add ping role: {e}")
 
     async def remove_ping_role(self, server_id: int, role_id: int):
-        await self.remove_role(server_id, role_id, "ping_roles")
+        try:
+            await self.connection.execute(
+                "DELETE FROM ping_roles WHERE server_id = ? AND role_id = ?",
+                (str(server_id), str(role_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Removed ping role {role_id} from server {server_id}.")
+        except Exception as e:
+            self.logger.error(f"Failed to remove ping role: {e}")
+            raise RuntimeError(f"Failed to remove ping role: {e}")
 
-    # Locked channels
+    # ---------------------------
+    # Methods for Locking Channels
+    # ---------------------------
+
     async def lock_channel_in_db(self, server_id: int, channel_id: int):
-        await self.execute(
-            "INSERT OR IGNORE INTO locked_channels (server_id, channel_id) VALUES (?, ?)",
-            (str(server_id), str(channel_id))
-        )
+        try:
+            await self.connection.execute(
+                "INSERT INTO locked_channels (server_id, channel_id) VALUES (?, ?)",
+                (str(server_id), str(channel_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Locked channel {channel_id} in server {server_id} and recorded in DB.")
+        except aiosqlite.IntegrityError:
+            self.logger.warning(f"Channel {channel_id} in server {server_id} is already locked.")
+        except Exception as e:
+            self.logger.error(f"Failed to lock channel in DB: {e}")
+            raise RuntimeError(f"Failed to lock channel in DB: {e}")
 
     async def unlock_channel_in_db(self, server_id: int, channel_id: int):
-        await self.execute(
-            "DELETE FROM locked_channels WHERE server_id = ? AND channel_id = ?",
-            (str(server_id), str(channel_id))
-        )
+        try:
+            await self.connection.execute(
+                "DELETE FROM locked_channels WHERE server_id = ? AND channel_id = ?",
+                (str(server_id), str(channel_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Unlocked channel {channel_id} in server {server_id} and removed from DB.")
+        except Exception as e:
+            self.logger.error(f"Failed to unlock channel in DB: {e}")
+            raise RuntimeError(f"Failed to unlock channel in DB: {e}")
 
     async def is_channel_locked(self, server_id: int, channel_id: int) -> bool:
-        result = await self.fetchone(
-            "SELECT 1 FROM locked_channels WHERE server_id = ? AND channel_id = ?",
-            (str(server_id), str(channel_id))
-        )
-        return result is not None
+        try:
+            async with self.connection.execute(
+                "SELECT 1 FROM locked_channels WHERE server_id = ? AND channel_id = ?",
+                (str(server_id), str(channel_id))
+            ) as cursor:
+                result = await cursor.fetchone()
+                is_locked = result is not None
+                self.logger.info(f"Channel {channel_id} in server {server_id} is_locked: {is_locked}")
+                return is_locked
+        except Exception as e:
+            self.logger.error(f"Failed to check if channel is locked: {e}")
+            raise RuntimeError(f"Failed to check if channel is locked: {e}")
 
-    # Automod protected users
-    async def get_protected_users(self, server_id: int) -> list:
-        rows = await self.fetchall(
-            "SELECT user_id FROM automod_protected_users WHERE server_id = ?",
-            (str(server_id),)
-        )
-        return [int(u[0]) for u in rows]
+    # ---------------------------
+    # Methods for Automod Exempt Roles
+    # ---------------------------
 
-    async def add_protected_user(self, server_id: int, user_id: int):
-        await self.execute(
-            "INSERT OR IGNORE INTO automod_protected_users (server_id, user_id) VALUES (?, ?)",
-            (str(server_id), str(user_id))
-        )
+    async def get_automod_exempt_roles(self, server_id: int) -> list:
+        """
+        Retrieves a list of role IDs that are exempt from automod.
+        """
+        try:
+            async with self.connection.execute(
+                "SELECT role_id FROM automod_exempt_roles WHERE server_id = ?",
+                (str(server_id),)
+            ) as cursor:
+                roles = await cursor.fetchall()
+                role_ids = [int(role[0]) for role in roles]
+                self.logger.info(f"Fetched automod exempt roles for server {server_id}: {role_ids}")
+                return role_ids
+        except Exception as e:
+            self.logger.error(f"Failed to get automod exempt roles: {e}")
+            raise RuntimeError(f"Failed to get automod exempt roles: {e}")
 
-    async def remove_protected_user(self, server_id: int, user_id: int):
-        await self.execute(
-            "DELETE FROM automod_protected_users WHERE server_id = ? AND user_id = ?",
-            (str(server_id), str(user_id))
-        )
+    async def add_automod_exempt_role(self, server_id: int, role_id: int):
+        """
+        Adds a role to the list of automod exempt roles.
+        """
+        try:
+            await self.connection.execute(
+                "INSERT INTO automod_exempt_roles (server_id, role_id) VALUES (?, ?)",
+                (str(server_id), str(role_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Added automod exempt role {role_id} to server {server_id}.")
+        except aiosqlite.IntegrityError:
+            self.logger.warning(f"Automod exempt role {role_id} already exists in server {server_id}.")
+            raise RuntimeError(f"Automod exempt role {role_id} already exists.")
+        except Exception as e:
+            self.logger.error(f"Failed to add automod exempt role: {e}")
+            raise RuntimeError(f"Failed to add automod exempt role: {e}")
 
-    # Automod exempt roles
-    async def get_exempt_roles(self, server_id: int) -> list:
-        return await self.get_roles(server_id, "automod_exempt_roles")
+    async def remove_automod_exempt_role(self, server_id: int, role_id: int):
+        """
+        Removes a role from the list of automod exempt roles.
+        """
+        try:
+            await self.connection.execute(
+                "DELETE FROM automod_exempt_roles WHERE server_id = ? AND role_id = ?",
+                (str(server_id), str(role_id))
+            )
+            await self.connection.commit()
+            self.logger.info(f"Removed automod exempt role {role_id} from server {server_id}.")
+        except Exception as e:
+            self.logger.error(f"Failed to remove automod exempt role: {e}")
+            raise RuntimeError(f"Failed to remove automod exempt role: {e}")
 
-    async def add_exempt_role(self, server_id: int, role_id: int):
-        await self.add_role(server_id, role_id, "automod_exempt_roles")
-
-    async def remove_exempt_role(self, server_id: int, role_id: int):
-        await self.remove_role(server_id, role_id, "automod_exempt_roles")
+    # ---------------------------
+    # Additional Utility Methods (Optional)
+    # ---------------------------
 
     async def close(self):
+        """
+        Closes the database connection.
+        """
         try:
             await self.connection.close()
+            self.logger.info("Database connection closed.")
         except Exception as e:
             self.logger.error(f"Failed to close database connection: {e}")
             raise RuntimeError(f"Failed to close database connection: {e}")
