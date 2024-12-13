@@ -195,7 +195,7 @@ class Tryout(commands.Cog, name="tryout"):
         if not set(required_roles).intersection(user_roles):
             embed = discord.Embed(
                 title="Permission Denied",
-                description="You do not have the required roles to use this command.",
+                description="Your clearance level is insufficient to run this command or must run it in <#1288192250572177449>.",
                 color=0xFF0000,
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
