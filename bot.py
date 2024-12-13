@@ -11,7 +11,6 @@ from discord.ext.commands import Context
 from dotenv import load_dotenv
 from database import DatabaseManager
 import motor.motor_asyncio
-import sqlite3  # For migration purposes only, can be removed after migration.
 
 load_dotenv()
 
@@ -54,7 +53,6 @@ class LoggingFormatter(logging.Formatter):
         formatter = logging.Formatter(format, "%Y-%m-%d %H:%M:%S", style="{")
         return formatter.format(record)
 
-
 logger = logging.getLogger("discord_bot")
 logger.setLevel(logging.INFO)
 
@@ -70,7 +68,6 @@ file_handler.setFormatter(file_handler_formatter)
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
 
-
 class DiscordBot(commands.Bot):
     def __init__(self) -> None:
         super().__init__(
@@ -83,7 +80,6 @@ class DiscordBot(commands.Bot):
         self.database = None
 
     async def init_db(self) -> None:
-        # Initialize MongoDB
         mongo_uri = os.getenv("MONGODB_URI")
         mongo_db_name = os.getenv("MONGODB_NAME")
         if not mongo_uri or not mongo_db_name:
@@ -190,17 +186,5 @@ class DiscordBot(commands.Bot):
         else:
             raise error
 
-
 bot = DiscordBot()
-
-# Add the slash command for migration
-@bot.tree.command(name="migrate_to_mongo", description="Migrate data from old SQLite database to MongoDB.")
-async def migrate_to_mongo(interaction: discord.Interaction):
-    await interaction.response.defer(thinking=True)
-    try:
-        count = await bot.database.migrate_from_sqlite_to_mongo()
-        await interaction.followup.send(f"Migration completed. {count} collections of data were migrated.")
-    except Exception as e:
-        await interaction.followup.send(f"Migration failed: {e}")
-
 bot.run(os.getenv("TOKEN"))
