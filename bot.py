@@ -125,7 +125,7 @@ class DiscordBot(commands.Bot):
 
         self.logger.info("Database ready.")
         await self.load_cogs()
-        self.status_task.start()
+#        self.status_task.start()
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author == self.user or message.author.bot:
