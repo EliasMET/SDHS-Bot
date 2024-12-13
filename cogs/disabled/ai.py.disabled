@@ -1,0 +1,261 @@
+import discord
+from discord.ext import commands, tasks
+from discord import app_commands
+from openai import AsyncOpenAI
+from openai.error import (
+    OpenAIError,
+    RateLimitError,
+    InvalidRequestError,
+    APIConnectionError,
+)
+import logging
+import asyncio
+import os
+from datetime import datetime
+from dotenv import load_dotenv
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_random_exponential,
+    retry_if_exception_type,
+)
+
+load_dotenv()
+
+# Configure logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)  # Change to DEBUG for more detailed logs
+handler = logging.StreamHandler()
+formatter = logging.Formatter(
+    "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s"
+)
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+
+class ModerationCog(commands.Cog):
+    """
+    A cog for moderating messages using the OpenAI Moderation API.
+    """
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.api_key = os.getenv("OPENAI_API_KEY")
+        if not self.api_key:
+            logger.error("OPENAI_API_KEY not found in environment variables.")
+            self.openai_client = None
+        else:
+            self.openai_client = AsyncOpenAI(api_key=self.api_key)
+            logger.info("OpenAI API key loaded from environment variables.")
+
+        # Log the OpenAI library version
+        try:
+            openai_version = openai.__version__
+            logger.info(f"OpenAI library version: {openai_version}")
+        except AttributeError:
+            logger.warning("Could not determine OpenAI library version.")
+
+        self.enabled_servers = set()
+        self.moderation_enabled = False
+        self.server_id = 1087452557426819203  # Replace with your server ID
+        self.last_reset_time = 0  # To track when the rate limit reset
+
+    def cog_unload(self):
+        if self.openai_client:
+            asyncio.create_task(self.openai_client.aclose())
+
+    async def is_admin_or_owner_check(self, interaction: discord.Interaction) -> bool:
+        """
+        Checks if the user is an admin or the bot owner for command checks.
+        """
+        bot = interaction.client
+        if not hasattr(bot, "owner_id"):
+            app_info = await bot.application_info()
+            bot.owner_id = app_info.owner.id
+        if interaction.user.id == bot.owner_id or interaction.user.guild_permissions.administrator:
+            return True
+        raise app_commands.MissingPermissions(["administrator"])
+
+    def is_admin_or_owner():
+        """
+        A decorator check that checks if the user is an admin or the bot owner for command checks.
+        """
+        async def predicate(interaction: discord.Interaction):
+            bot = interaction.client
+            if not hasattr(bot, "owner_id"):
+                app_info = await bot.application_info()
+                bot.owner_id = app_info.owner.id
+            if interaction.user.id == bot.owner_id or interaction.user.guild_permissions.administrator:
+                return True
+            raise app_commands.MissingPermissions(["administrator"])
+
+        return app_commands.check(predicate)
+
+    @app_commands.command(name="moderation", description="Enable or disable AI moderation.")
+    @app_commands.describe(status="on or off")
+    @is_admin_or_owner()
+    async def moderation(self, interaction: discord.Interaction, status: str):
+        """
+        Enables or disables AI moderation for the server.
+        """
+        if interaction.guild.id != self.server_id:
+            await interaction.response.send_message(
+                "This command is only available in the specified server.", ephemeral=True
+            )
+            return
+
+        if status.lower() == "on":
+            self.moderation_enabled = True
+            await interaction.response.send_message(
+                "AI moderation is now **enabled**.", ephemeral=True
+            )
+            logger.info(f"AI moderation enabled in guild {interaction.guild.id}.")
+        elif status.lower() == "off":
+            self.moderation_enabled = False
+            await interaction.response.send_message(
+                "AI moderation is now **disabled**.", ephemeral=True
+            )
+            logger.info(f"AI moderation disabled in guild {interaction.guild.id}.")
+        else:
+            await interaction.response.send_message(
+                "Invalid status. Use 'on' or 'off'.", ephemeral=True
+            )
+
+    @retry(
+        retry=retry_if_exception_type(RateLimitError),
+        wait=wait_random_exponential(min=1, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+    async def _moderate_with_retry(self, message_content: str):
+        """
+        Moderates content using the OpenAI Moderation API with retries.
+        """
+        if not self.openai_client:
+            logger.warning("OpenAI client not initialized. Skipping moderation.")
+            return None
+
+        try:
+            response = await self.openai_client.moderations.create(
+                input=message_content,
+                model="text-moderation-latest"
+            )
+            logger.debug(f"OpenAI Moderation API Response: {response}")
+            return response
+        except RateLimitError as e:
+            logger.warning(f"Rate limit hit: {e}. Retrying...")
+            raise
+        except InvalidRequestError as e:
+            logger.error(f"Invalid request: {e}")
+            raise
+        except APIConnectionError as e:
+            logger.error(f"API connection error: {e}")
+            raise
+        except OpenAIError as e:
+            logger.error(f"OpenAI API error: {e}")
+            raise
+
+    async def _handle_rate_limit_error(self, exception):
+        """
+        Handles rate limit errors by logging it and pausing execution.
+        """
+        if isinstance(exception, RateLimitError):
+            # OpenAI's RateLimitError may include a 'retry_after' attribute
+            retry_after = getattr(exception, "retry_after", 60)  # Default to 60 seconds
+            self.last_reset_time = time.time() + retry_after
+            logger.warning(
+                f"Hit rate limit, waiting for {retry_after} seconds. "
+                f"Will resume moderation after {datetime.fromtimestamp(self.last_reset_time).strftime('%Y-%m-%d %H:%M:%S')}."
+            )
+            await asyncio.sleep(retry_after)  # Wait for the specified retry_after duration
+            logger.info("Resuming moderation after rate limit wait.")
+        else:
+            logger.error(f"Unhandled exception type in rate limit handler: {type(exception)}")
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """
+        Listens for messages and moderates them using the OpenAI API if enabled.
+        """
+        if message.author.bot:
+            return
+
+        if message.guild.id != self.server_id:
+            return
+
+        if not self.moderation_enabled:
+            return
+
+        if self.last_reset_time > time.time():
+            resume_time = datetime.fromtimestamp(self.last_reset_time).strftime("%Y-%m-%d %H:%M:%S")
+            logger.warning(
+                f"Moderation is paused due to rate limiting. Will resume after {resume_time}."
+            )
+            return
+
+        try:
+            response = await self._moderate_with_retry(message.content)
+
+            if response and response.results:
+                result = response.results[0]
+                if result.flagged:
+                    await message.delete()
+                    log_embed = discord.Embed(
+                        title="🚨 AI Moderation Flagged Message",
+                        color=0xFF0000,
+                        timestamp=datetime.utcnow(),
+                    )
+                    log_embed.add_field(name="User", value=message.author.mention, inline=True)
+                    log_embed.add_field(name="Channel", value=message.channel.mention, inline=True)
+                    log_embed.add_field(name="Offending Message", value=f"||{message.content}||", inline=False)
+                    log_embed.set_footer(text=f"User ID: {message.author.id}")
+                    log_channel = message.guild.system_channel
+                    if log_channel:
+                        await log_channel.send(embed=log_embed)
+                    else:
+                        logger.warning(f"System channel not found in guild {message.guild.id}.")
+                    logger.info(f"Deleted message from {message.author} due to AI moderation flags.")
+        except RateLimitError as e:
+            await self._handle_rate_limit_error(e)
+        except OpenAIError as e:
+            logger.error(f"Error during OpenAI moderation: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error during moderation: {e}")
+
+    @commands.Cog.listener()
+    async def on_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ):
+        """
+        Handles errors for all application commands in this cog.
+        """
+        if hasattr(error, "handled") and error.handled:
+            return
+
+        embed = discord.Embed(
+            title="❌ Error",
+            description="An unexpected error occurred while processing the command.",
+            color=0x8B0000,
+            timestamp=datetime.utcnow(),
+        )
+
+        if isinstance(error, app_commands.MissingPermissions):
+            embed.description = "You do not have the required permissions to use this command."
+        elif isinstance(error, app_commands.MissingRequiredArgument):
+            embed.description = "Missing arguments. Please check the command usage."
+        elif isinstance(error, app_commands.CommandOnCooldown):
+            embed.description = f"This command is on cooldown. Please try again after {error.retry_after:.2f} seconds."
+        elif isinstance(error, app_commands.CheckFailure):
+            embed.description = "You do not meet the requirements to use this command."
+        else:
+            logger.error(f"Unhandled error in command {interaction.command}: {error}")
+            embed.description = f"An unexpected error occurred: {error}"
+
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(ModerationCog(bot))
