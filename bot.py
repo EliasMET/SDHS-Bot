@@ -1,7 +1,3 @@
-"""
-bot.py
-"""
-
 import json
 import logging
 import os
@@ -9,13 +5,15 @@ import platform
 import random
 import sys
 
-import aiosqlite
 import discord
 from discord.ext import commands, tasks
 from discord.ext.commands import Context
 from dotenv import load_dotenv
-
 from database import DatabaseManager
+import motor.motor_asyncio
+import sqlite3  # For migration purposes only, can be removed after migration.
+
+load_dotenv()
 
 if not os.path.isfile(f"{os.path.realpath(os.path.dirname(__file__))}/config.json"):
     sys.exit("'config.json' not found! Please add it and try again.")
@@ -85,19 +83,20 @@ class DiscordBot(commands.Bot):
         self.database = None
 
     async def init_db(self) -> None:
-        # This simply runs the schema.sql if it exists.
-        async with aiosqlite.connect(
-            f"{os.path.realpath(os.path.dirname(__file__))}/database/database.db"
-        ) as db:
-            schema_path = f"{os.path.realpath(os.path.dirname(__file__))}/database/schema.sql"
-            if os.path.isfile(schema_path):
-                self.logger.info("Applying schema.sql to the database...")
-                with open(schema_path) as file:
-                    await db.executescript(file.read())
-                await db.commit()
-                self.logger.info("Schema applied successfully.")
-            else:
-                self.logger.info("No schema.sql found, skipping schema application.")
+        # Initialize MongoDB
+        mongo_uri = os.getenv("MONGODB_URI")
+        mongo_db_name = os.getenv("MONGODB_NAME")
+        if not mongo_uri or not mongo_db_name:
+            self.logger.error("MongoDB configuration not found in .env")
+            sys.exit("MongoDB configuration missing.")
+
+        self.logger.info("Connecting to MongoDB...")
+        mongo_client = motor.motor_asyncio.AsyncIOMotorClient(mongo_uri)
+        mongo_db = mongo_client[mongo_db_name]
+
+        self.database = DatabaseManager(db=mongo_db)
+        await self.database.initialize_database()
+        self.logger.info("MongoDB initialization complete.")
 
     async def load_cogs(self) -> None:
         for file in os.listdir(f"{os.path.realpath(os.path.dirname(__file__))}/cogs"):
@@ -127,15 +126,8 @@ class DiscordBot(commands.Bot):
         self.logger.info("-------------------")
 
         await self.init_db()
-        db_path = f"{os.path.realpath(os.path.dirname(__file__))}/database/database.db"
-        self.logger.info("Connecting to the database...")
-        conn = await aiosqlite.connect(db_path)
-        self.database = DatabaseManager(connection=conn)
 
-        self.logger.info("Calling initialize_database on DatabaseManager...")
-        await self.database.initialize_database()
-        self.logger.info("Database schema and columns ensured.")
-
+        self.logger.info("Database ready.")
         await self.load_cogs()
         self.status_task.start()
 
@@ -172,14 +164,6 @@ class DiscordBot(commands.Bot):
                 description="You are not the owner of the bot!", color=0xE02B2B
             )
             await context.send(embed=embed)
-            if context.guild:
-                self.logger.warning(
-                    f"{context.author} (ID: {context.author.id}) tried to execute an owner-only command in {context.guild.name} (ID: {context.guild.id})."
-                )
-            else:
-                self.logger.warning(
-                    f"{context.author} (ID: {context.author.id}) tried to execute an owner-only command in DMs."
-                )
         elif isinstance(error, commands.MissingPermissions):
             embed = discord.Embed(
                 description="You are missing the permission(s) `"
@@ -207,7 +191,16 @@ class DiscordBot(commands.Bot):
             raise error
 
 
-load_dotenv()
-
 bot = DiscordBot()
+
+# Add the slash command for migration
+@bot.tree.command(name="migrate_to_mongo", description="Migrate data from old SQLite database to MongoDB.")
+async def migrate_to_mongo(interaction: discord.Interaction):
+    await interaction.response.defer(thinking=True)
+    try:
+        count = await bot.database.migrate_from_sqlite_to_mongo()
+        await interaction.followup.send(f"Migration completed. {count} collections of data were migrated.")
+    except Exception as e:
+        await interaction.followup.send(f"Migration failed: {e}")
+
 bot.run(os.getenv("TOKEN"))
