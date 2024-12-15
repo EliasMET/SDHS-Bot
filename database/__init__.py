@@ -167,7 +167,6 @@ class DatabaseManager:
             data["protected_users"].remove(str(user_id))
             await self._update_server_data(server_id, {"protected_users": data["protected_users"]})
 
-    # RE-ADD THIS METHOD AS REQUESTED
     async def get_automod_exempt_roles(self, server_id: int) -> list:
         data = await self._get_server_data(server_id)
         return [int(r) for r in data["automod_exempt_roles"]]
@@ -342,3 +341,22 @@ class DatabaseManager:
 
     async def close(self):
         self.logger.info("MongoDB connection closed.")
+
+    # New methods for locking/unlocking channels in DB
+    async def lock_channel_in_db(self, server_id: int, channel_id: int):
+        data = await self._get_server_data(server_id)
+        cid_str = str(channel_id)
+        if cid_str not in data["locked_channels"]:
+            data["locked_channels"].append(cid_str)
+            await self._update_server_data(server_id, {"locked_channels": data["locked_channels"]})
+
+    async def unlock_channel_in_db(self, server_id: int, channel_id: int):
+        data = await self._get_server_data(server_id)
+        cid_str = str(channel_id)
+        if cid_str in data["locked_channels"]:
+            data["locked_channels"].remove(cid_str)
+            await self._update_server_data(server_id, {"locked_channels": data["locked_channels"]})
+
+    async def is_channel_locked(self, server_id: int, channel_id: int) -> bool:
+        data = await self._get_server_data(server_id)
+        return str(channel_id) in data["locked_channels"]
