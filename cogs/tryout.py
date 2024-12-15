@@ -9,11 +9,10 @@ import os
 logger = logging.getLogger(__name__)
 
 class PaginatedDropdownView(discord.ui.View):
-    def __init__(self, groups, user, cohost, lock_time, group_settings, channel_id, bot, roblox_user_id, settings_cog, per_page=25):
+    def __init__(self, groups, user, lock_time, group_settings, channel_id, bot, roblox_user_id, settings_cog, per_page=25):
         super().__init__(timeout=180)
         self.groups = list(groups.items())
         self.user = user
-        self.cohost = cohost
         self.lock_time = lock_time
         self.group_settings = group_settings
         self.channel_id = channel_id
@@ -71,18 +70,22 @@ class PaginatedDropdownView(discord.ui.View):
         ping_roles = await self.bot.database.get_ping_roles(interaction.guild.id)
         pings = " ".join(f"<@&{rid}>" for rid in ping_roles) if ping_roles else ""
 
-        # Current voice channel link (if any)
+        # Generate a voice channel invite link if the user is in a voice channel
         voice_channel = interaction.user.voice.channel if interaction.user.voice else None
-        vc_display = f"<#{voice_channel.id}>" if voice_channel else ""
+        vc_display = ""
+        if voice_channel:
+            invite = await voice_channel.create_invite()
+            vc_display = invite.url
 
+        # Add one empty line between requirements and status
         tryout_message = (
             f"[DIVISION] {group_info['event_name']}\n"
             f"[HOST] {self.user.mention}\n"
             f"[LOCATION] {link} < JOIN PROFILE\n"
             f"[INFO] {group_info['description']}\n"
             f"[REQUIREMENTS]\n"
-            f"{req_text}\n\n"
-            f"{self.cohost.mention if self.cohost else ''}\n"
+            f"{req_text}\n"
+            f"\n"  # One extra newline here to create an empty line
             f"[STATUS] Locking at {lock_time_formatted}\n"
             f"{pings}\n"
             f"{vc_display}"
@@ -190,7 +193,6 @@ class Tryout(commands.Cog, name="tryout"):
     async def tryout(
         self,
         interaction: discord.Interaction,
-        cohost: discord.Member = None,
         lock_time: int = 10,
     ) -> None:
         bloxlink_api_key = os.getenv("BLOXLINK_TOKEN")
@@ -198,7 +200,7 @@ class Tryout(commands.Cog, name="tryout"):
         guild_id = self.bot.guild_id
         logger.info(
             f"User {interaction.user} (ID: {interaction.user.id}) triggered /tryout in guild {guild_id} "
-            f"with lock_time={lock_time}, cohost={cohost}."
+            f"with lock_time={lock_time}."
         )
 
         # Check required roles
@@ -317,8 +319,11 @@ class Tryout(commands.Cog, name="tryout"):
                 ping_roles = await self.db.get_ping_roles(interaction.guild.id)
                 pings = " ".join(f"<@&{rid}>" for rid in ping_roles) if ping_roles else ""
 
-                # Voice channel link
-                vc_display = f"<#{interaction.user.voice.channel.id}>" if interaction.user.voice else ""
+                # Generate a voice channel invite for the user's current VC
+                vc_display = ""
+                if user_vc:
+                    invite = await user_vc.create_invite()
+                    vc_display = invite.url
 
                 if len(matching_groups) == 1:
                     selected_group_id = next(iter(matching_groups.keys()))
@@ -331,14 +336,15 @@ class Tryout(commands.Cog, name="tryout"):
                     reqs = group_info["requirements"] if group_info.get("requirements") else []
                     req_text = "\n".join(reqs) if reqs else "None"
 
+                    # One empty line before [STATUS]
                     tryout_message = (
                         f"[DIVISION] {group_info['event_name']}\n"
                         f"[HOST] {interaction.user.mention}\n"
                         f"[LOCATION] {link} < JOIN PROFILE\n"
                         f"[INFO] {group_info['description']}\n"
                         f"[REQUIREMENTS]\n"
-                        f"{req_text}\n\n"
-                        f"{cohost.mention if cohost else ''}\n"
+                        f"{req_text}\n"
+                        f"\n"  # Extra newline for empty line before STATUS
                         f"[STATUS] Locking at {lock_time_formatted}\n"
                         f"{pings}\n"
                         f"{vc_display}"
@@ -389,7 +395,6 @@ class Tryout(commands.Cog, name="tryout"):
                     view = PaginatedDropdownView(
                         matching_groups,
                         interaction.user,
-                        cohost,
                         lock_time,
                         matching_groups,
                         channel_id,
