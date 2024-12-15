@@ -78,14 +78,15 @@ class PaginatedDropdownView(discord.ui.View):
             vc_display = invite.url
 
         # Add one empty line between requirements and status
+        # Bold the event name after [DIVISION]
         tryout_message = (
-            f"[DIVISION] {group_info['event_name']}\n"
+            f"[DIVISION] **{group_info['event_name']}**\n"
             f"[HOST] {self.user.mention}\n"
             f"[LOCATION] {link} < JOIN PROFILE\n"
             f"[INFO] {group_info['description']}\n"
             f"[REQUIREMENTS]\n"
             f"{req_text}\n"
-            f"\n"  # One extra newline here to create an empty line
+            f"\n"  # One extra newline for empty line before STATUS
             f"[STATUS] Locking at {lock_time_formatted}\n"
             f"{pings}\n"
             f"{vc_display}"
@@ -336,9 +337,9 @@ class Tryout(commands.Cog, name="tryout"):
                     reqs = group_info["requirements"] if group_info.get("requirements") else []
                     req_text = "\n".join(reqs) if reqs else "None"
 
-                    # One empty line before [STATUS]
+                    # One empty line before [STATUS] and bold event name
                     tryout_message = (
-                        f"[DIVISION] {group_info['event_name']}\n"
+                        f"[DIVISION] **{group_info['event_name']}**\n"
                         f"[HOST] {interaction.user.mention}\n"
                         f"[LOCATION] {link} < JOIN PROFILE\n"
                         f"[INFO] {group_info['description']}\n"
