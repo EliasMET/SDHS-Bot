@@ -14,6 +14,9 @@ import re
 from datetime import timedelta
 import logging
 
+async def is_admin_or_owner(interaction: discord.Interaction) -> bool:
+    return interaction.user.guild_permissions.administrator or interaction.user.id == interaction.guild.owner_id
+
 # Define the check function for admin, owner, or allowed roles outside the class
 async def is_moderator(interaction: discord.Interaction) -> bool:
     """
@@ -46,7 +49,7 @@ class Moderation(commands.Cog, name="moderation"):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db = None  # Will be initialized in cog_load
+        self.db = bot.database  # Ensure the database manager is initialized
 
     async def cog_load(self):
         """
@@ -104,6 +107,67 @@ class Moderation(commands.Cog, name="moderation"):
                 ),
                 ephemeral=True
             )
+    @app_commands.command(name="global_ban", description="Globally ban a user.")
+    @app_commands.check(is_admin_or_owner)
+    async def global_ban(self, interaction: discord.Interaction, user: discord.User, reason: str = "No reason provided."):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            # Add user to global bans in the database
+            await self.db.add_global_ban(user.id, reason)
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    description=f"✅ Successfully globally banned {user.mention}.\n**Reason:** {reason}",
+                    color=discord.Color.green()
+                ),
+                ephemeral=True
+            )
+            self.bot.logger.info(f"{interaction.user} globally banned {user} for reason: {reason}")
+            # Implement additional logic to ban the user from all guilds if necessary
+        except Exception as e:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    description=f"❌ Failed to globally ban user: {e}",
+                    color=discord.Color.red()
+                ),
+                ephemeral=True
+            )
+            self.bot.logger.error(f"Exception while globally banning {user}: {e}")
+
+    @app_commands.command(name="global_unban", description="Remove a global ban from a user.")
+    @app_commands.check(is_admin_or_owner)
+    async def global_unban(self, interaction: discord.Interaction, user: discord.User):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            removed = await self.db.remove_global_ban(user.id)
+            if removed:
+                await interaction.followup.send(
+                    embed=discord.Embed(
+                        description=f"✅ Successfully removed global ban for {user.mention}.",
+                        color=discord.Color.green()
+                    ),
+                    ephemeral=True
+                )
+                self.bot.logger.info(f"{interaction.user} removed global ban for {user}")
+            else:
+                await interaction.followup.send(
+                    embed=discord.Embed(
+                        description=f"❌ No global ban found for {user.mention}.",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
+                self.bot.logger.warning(f"{interaction.user} attempted to remove non-existent global ban for {user}")
+        except Exception as e:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    description=f"❌ Failed to remove global ban: {e}",
+                    color=discord.Color.red()
+                ),
+                ephemeral=True
+            )
+            self.bot.logger.error(f"Exception while removing global ban for {user}: {e}")
+
+    # Kick Command
             self.bot.logger.error(f"HTTPException while banning {member}: {e}")
 
     # Kick Command

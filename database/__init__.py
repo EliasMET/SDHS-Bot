@@ -371,6 +371,22 @@ class DatabaseManager:
     async def close(self):
         self.logger.info("MongoDB connection closed.")
 
+    async def add_global_ban(self, user_id: int, reason: str):
+        doc = {
+            "user_id": str(user_id),
+            "reason": reason,
+            "banned_at": datetime.utcnow().isoformat()
+        }
+        await self.db["global_bans"].insert_one(doc)
+
+    async def remove_global_ban(self, user_id: int):
+        result = await self.db["global_bans"].delete_one({"user_id": str(user_id)})
+        return result.deleted_count > 0
+
+    async def is_user_globally_banned(self, user_id: int) -> bool:
+        doc = await self.db["global_bans"].find_one({"user_id": str(user_id)})
+        return doc is not None
+
     async def lock_channel_in_db(self, server_id: int, channel_id: int):
         data = await self._get_server_data(server_id)
         cid_str = str(channel_id)
