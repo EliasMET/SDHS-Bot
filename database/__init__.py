@@ -165,7 +165,6 @@ class DatabaseManager:
     async def set_automod_mute_duration(self, server_id: int, duration: int):
         await self.update_server_setting(server_id, "automod_mute_duration", duration)
 
-    # New methods for spam settings
     async def get_automod_spam_limit(self, server_id: int) -> int:
         settings = await self.get_server_settings(server_id)
         return settings.get('automod_spam_limit', 5)
@@ -371,20 +370,22 @@ class DatabaseManager:
     async def close(self):
         self.logger.info("MongoDB connection closed.")
 
-    async def add_global_ban(self, user_id: int, reason: str):
+    async def add_global_ban(self, discord_user_id: int, roblox_user_id: int, reason: str, moderator_discord_id: int):
         doc = {
-            "user_id": str(user_id),
+            "discord_user_id": str(discord_user_id),
+            "roblox_user_id": roblox_user_id,
             "reason": reason,
-            "banned_at": datetime.utcnow().isoformat()
+            "banned_at": datetime.utcnow().isoformat(),
+            "moderator_discord_id": str(moderator_discord_id)
         }
         await self.db["global_bans"].insert_one(doc)
 
-    async def remove_global_ban(self, user_id: int):
-        result = await self.db["global_bans"].delete_one({"user_id": str(user_id)})
+    async def remove_global_ban(self, discord_user_id: int) -> bool:
+        result = await self.db["global_bans"].delete_one({"discord_user_id": str(discord_user_id)})
         return result.deleted_count > 0
 
-    async def is_user_globally_banned(self, user_id: int) -> bool:
-        doc = await self.db["global_bans"].find_one({"user_id": str(user_id)})
+    async def is_user_globally_banned(self, discord_user_id: int) -> bool:
+        doc = await self.db["global_bans"].find_one({"discord_user_id": str(discord_user_id)})
         return doc is not None
 
     async def lock_channel_in_db(self, server_id: int, channel_id: int):
