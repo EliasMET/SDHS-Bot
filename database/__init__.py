@@ -80,7 +80,9 @@ class DatabaseManager:
                     "automod_log_channel_id": None,
                     "tryout_channel_id": None,
                     "mod_log_channel_id": None,
-                    "automod_mute_duration": 3600
+                    "automod_mute_duration": 3600,
+                    "automod_spam_limit": 5,    # Default spam limit
+                    "automod_spam_window": 5    # Default spam time window
                 },
                 "tryout_groups": [],
                 "tryout_required_roles": [],
@@ -94,15 +96,25 @@ class DatabaseManager:
             }
             await self.db["server_data"].insert_one(data)
         else:
+            # Ensure new fields exist
+            changed = False
+            if "automod_spam_limit" not in data["settings"]:
+                data["settings"]["automod_spam_limit"] = 5
+                changed = True
+            if "automod_spam_window" not in data["settings"]:
+                data["settings"]["automod_spam_window"] = 5
+                changed = True
             if "tryout_allowed_vcs" not in data:
                 data["tryout_allowed_vcs"] = []
-                await self._update_server_data(server_id, {"tryout_allowed_vcs": data["tryout_allowed_vcs"]})
+                changed = True
             if "autopromotion_channel_id" not in data:
                 data["autopromotion_channel_id"] = None
-                await self._update_server_data(server_id, {"autopromotion_channel_id": data["autopromotion_channel_id"]})
+                changed = True
             if "automod_exempt_roles" not in data:
                 data["automod_exempt_roles"] = []
-                await self._update_server_data(server_id, {"automod_exempt_roles": data["automod_exempt_roles"]})
+                changed = True
+            if changed:
+                await self._update_server_data(server_id, data)
 
         return data
 
@@ -125,7 +137,9 @@ class DatabaseManager:
             'automod_log_channel_id': int(s['automod_log_channel_id']) if s.get('automod_log_channel_id') else None,
             'tryout_channel_id': int(s['tryout_channel_id']) if s.get('tryout_channel_id') else None,
             'mod_log_channel_id': int(s['mod_log_channel_id']) if s.get('mod_log_channel_id') else None,
-            'automod_mute_duration': int(s.get('automod_mute_duration', 3600))
+            'automod_mute_duration': int(s.get('automod_mute_duration', 3600)),
+            'automod_spam_limit': int(s.get('automod_spam_limit', 5)),
+            'automod_spam_window': int(s.get('automod_spam_window', 5))
         }
 
     async def update_server_setting(self, server_id: int, setting_name: str, value):
@@ -150,6 +164,21 @@ class DatabaseManager:
 
     async def set_automod_mute_duration(self, server_id: int, duration: int):
         await self.update_server_setting(server_id, "automod_mute_duration", duration)
+
+    # New methods for spam settings
+    async def get_automod_spam_limit(self, server_id: int) -> int:
+        settings = await self.get_server_settings(server_id)
+        return settings.get('automod_spam_limit', 5)
+
+    async def set_automod_spam_limit(self, server_id: int, limit: int):
+        await self.update_server_setting(server_id, "automod_spam_limit", limit)
+
+    async def get_automod_spam_window(self, server_id: int) -> int:
+        settings = await self.get_server_settings(server_id)
+        return settings.get('automod_spam_window', 5)
+
+    async def set_automod_spam_window(self, server_id: int, window: int):
+        await self.update_server_setting(server_id, "automod_spam_window", window)
 
     async def get_protected_users(self, server_id: int) -> list:
         data = await self._get_server_data(server_id)
@@ -342,7 +371,6 @@ class DatabaseManager:
     async def close(self):
         self.logger.info("MongoDB connection closed.")
 
-    # New methods for locking/unlocking channels in DB
     async def lock_channel_in_db(self, server_id: int, channel_id: int):
         data = await self._get_server_data(server_id)
         cid_str = str(channel_id)

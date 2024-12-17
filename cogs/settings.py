@@ -12,7 +12,7 @@ class SettingsCategory(Enum):
     AUTOMOD = "automod"
     TRYOUT = "tryout"
     MODERATION = "moderation"
-    AUTOPROMOTION = "autopromotion"  # New category added here
+    AUTOPROMOTION = "autopromotion"
 
 class Settings(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -23,7 +23,7 @@ class Settings(commands.Cog):
             SettingsCategory.AUTOMOD.value: self.handle_automod_settings,
             SettingsCategory.TRYOUT.value: self.handle_tryout_settings,
             SettingsCategory.MODERATION.value: self.handle_moderation_settings,
-            SettingsCategory.AUTOPROMOTION.value: self.handle_autopromotion_settings  # integrate new handler
+            SettingsCategory.AUTOPROMOTION.value: self.handle_autopromotion_settings
         }
 
     async def cog_load(self):
@@ -62,7 +62,7 @@ class Settings(commands.Cog):
         app_commands.Choice(name="Automod", value=SettingsCategory.AUTOMOD.value),
         app_commands.Choice(name="Tryout", value=SettingsCategory.TRYOUT.value),
         app_commands.Choice(name="Moderation", value=SettingsCategory.MODERATION.value),
-        app_commands.Choice(name="Autopromotion", value=SettingsCategory.AUTOPROMOTION.value)  # include autopromotion
+        app_commands.Choice(name="Autopromotion", value=SettingsCategory.AUTOPROMOTION.value)
     ])
     async def settings_command(self, interaction: discord.Interaction, category: app_commands.Choice[str]):
         if not await self.is_admin_or_owner(interaction):
@@ -85,9 +85,6 @@ class Settings(commands.Cog):
         except Exception as e:
             await self.handle_exception(interaction, e, context=f"processing {category.value} settings")
 
-    # ---------------------------
-    # AUTOMOD SETTINGS HANDLER
-    # ---------------------------
     async def handle_automod_settings(self, interaction: discord.Interaction):
         try:
             settings = await self.db.get_server_settings(interaction.guild.id)
@@ -103,9 +100,6 @@ class Settings(commands.Cog):
             traceback.print_exc()
             await self.send_error_response(interaction, "Error", f"Failed to load automod settings: {e}")
 
-    # ---------------------------
-    # TRYOUT SETTINGS HANDLER
-    # ---------------------------
     async def handle_tryout_settings(self, interaction: discord.Interaction):
         try:
             embed = await self.create_tryout_settings_embed(interaction.guild)
@@ -120,9 +114,6 @@ class Settings(commands.Cog):
                 f"Failed to load tryout settings: {e}"
             )
 
-    # ---------------------------
-    # MODERATION SETTINGS HANDLER
-    # ---------------------------
     async def handle_moderation_settings(self, interaction: discord.Interaction):
         try:
             embed = await self.create_moderation_settings_embed(interaction.guild)
@@ -137,9 +128,6 @@ class Settings(commands.Cog):
                 f"Failed to load moderation settings: {e}"
             )
 
-    # ---------------------------
-    # AUTOPROMOTION SETTINGS HANDLER
-    # ---------------------------
     async def handle_autopromotion_settings(self, interaction: discord.Interaction):
         try:
             embed = await self.create_autopromotion_settings_embed(interaction.guild)
@@ -154,9 +142,6 @@ class Settings(commands.Cog):
                 f"Failed to load autopromotion settings: {e}"
             )
 
-    # ---------------------------
-    # AUTOMOD EMBED CREATION
-    # ---------------------------
     async def create_automod_settings_embed(self, s: dict, guild_id: int, page: int) -> discord.Embed:
         au_status = "✅ Enabled" if s.get('automod_enabled') else "❌ Disabled"
         lg_status = "✅ Enabled" if s.get('automod_logging_enabled') else "❌ Disabled"
@@ -166,23 +151,26 @@ class Settings(commands.Cog):
         exempts = await self.db.get_automod_exempt_roles(guild_id)
         prot_display = ", ".join(f"<@{u}>" for u in prot) if prot else "None"
         exempts_display = ", ".join(f"<@&{r}>" for r in exempts) if exempts else "None"
+        spam_limit = await self.db.get_automod_spam_limit(guild_id)
+        spam_window = await self.db.get_automod_spam_window(guild_id)
 
-        embed = discord.Embed(title="⚙️ Automod Settings", color=discord.Color.blue(), description=f"Page {page}/2")
+        embed = discord.Embed(title="⚙️ Automod Settings", color=discord.Color.blue(), description=f"Page {page}/3")
         embed.set_footer(text="Use the buttons below to configure.")
         
         if page == 1:
             embed.add_field(name="Automod Status", value=au_status, inline=True)
             embed.add_field(name="Logging Status", value=lg_status, inline=True)
             embed.add_field(name="Log Channel", value=lg_ch, inline=False)
-        else:
+        elif page == 2:
             embed.add_field(name="Mute Duration (seconds)", value=str(mute), inline=True)
             embed.add_field(name="Protected Users", value=prot_display, inline=False)
             embed.add_field(name="Exempt Roles", value=exempts_display, inline=False)
+        else:  # page 3
+            embed.add_field(name="Spam Message Limit", value=str(spam_limit), inline=True)
+            embed.add_field(name="Spam Time Window (seconds)", value=str(spam_window), inline=True)
+
         return embed
 
-    # ---------------------------
-    # TRYOUT EMBED CREATION
-    # ---------------------------
     async def create_tryout_settings_embed(self, guild: discord.Guild) -> discord.Embed:
         ch_id = await self.db.get_tryout_channel_id(guild.id)
         ch = f"<#{ch_id}>" if ch_id else "Not Set"
@@ -206,9 +194,6 @@ class Settings(commands.Cog):
         embed.add_field(name="Allowed Voice Channels", value=vc_display, inline=False)
         return embed
 
-    # ---------------------------
-    # MODERATION EMBED CREATION
-    # ---------------------------
     async def create_moderation_settings_embed(self, guild: discord.Guild) -> discord.Embed:
         settings = await self.db.get_server_settings(guild.id)
         ch_id = settings.get('mod_log_channel_id')
@@ -221,9 +206,6 @@ class Settings(commands.Cog):
         embed.add_field(name="Allowed Roles", value=rd, inline=False)
         return embed
 
-    # ---------------------------
-    # AUTOPROMOTION EMBED CREATION
-    # ---------------------------
     async def create_autopromotion_settings_embed(self, guild: discord.Guild) -> discord.Embed:
         ch_id = await self.db.get_autopromotion_channel_id(guild.id)
         ch = f"<#{ch_id}>" if ch_id else "Not Set"
@@ -247,6 +229,7 @@ class Settings(commands.Cog):
                 "Error",
                 f"An unexpected error occurred: {type(error).__name__}: {error}"
             )
+
 
 class BaseChannelModal(discord.ui.Modal):
     channel_id = discord.ui.TextInput(label="Channel ID", placeholder="Enter the channel ID", required=True, max_length=20)
@@ -593,6 +576,71 @@ class AutomodProtectedUsersModal(discord.ui.Modal):
                 ephemeral=True
             )
 
+# New modals for spam settings
+class AutomodSpamLimitModal(discord.ui.Modal):
+    limit = discord.ui.TextInput(label="Spam Message Limit", placeholder="5", required=True, max_length=5)
+
+    def __init__(self, db, guild, update_callback, settings_cog):
+        super().__init__(title="Set Automod Spam Message Limit")
+        self.db = db
+        self.guild = guild
+        self.update_callback = update_callback
+        self.settings_cog = settings_cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        val = self.limit.value.strip()
+        if not val.isdigit() or int(val) <= 0:
+            return await interaction.response.send_message(
+                embed=discord.Embed(title="Invalid Limit", description="Enter a positive number.", color=0xE02B2B),
+                ephemeral=True
+            )
+        try:
+            await self.db.set_automod_spam_limit(self.guild.id, int(val))
+            await interaction.response.send_message(
+                embed=discord.Embed(title="Spam Limit Set", description=f"Set to {val} messages.", color=discord.Color.green()),
+                ephemeral=True
+            )
+            await self.update_callback()
+        except Exception as e:
+            logger.error("Error in AutomodSpamLimitModal on_submit:")
+            traceback.print_exc()
+            await interaction.response.send_message(
+                embed=discord.Embed(title="Error", description=f"Failed to set spam limit: {e}", color=0xE02B2B),
+                ephemeral=True
+            )
+
+class AutomodSpamWindowModal(discord.ui.Modal):
+    window = discord.ui.TextInput(label="Spam Time Window (seconds)", placeholder="5", required=True, max_length=5)
+
+    def __init__(self, db, guild, update_callback, settings_cog):
+        super().__init__(title="Set Automod Spam Time Window")
+        self.db = db
+        self.guild = guild
+        self.update_callback = update_callback
+        self.settings_cog = settings_cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        val = self.window.value.strip()
+        if not val.isdigit() or int(val) <= 0:
+            return await interaction.response.send_message(
+                embed=discord.Embed(title="Invalid Window", description="Enter a positive number.", color=0xE02B2B),
+                ephemeral=True
+            )
+        try:
+            await self.db.set_automod_spam_window(self.guild.id, int(val))
+            await interaction.response.send_message(
+                embed=discord.Embed(title="Spam Time Window Set", description=f"Set to {val} seconds.", color=discord.Color.green()),
+                ephemeral=True
+            )
+            await self.update_callback()
+        except Exception as e:
+            logger.error("Error in AutomodSpamWindowModal on_submit:")
+            traceback.print_exc()
+            await interaction.response.send_message(
+                embed=discord.Embed(title="Error", description=f"Failed to set spam time window: {e}", color=0xE02B2B),
+                ephemeral=True
+            )
+
 class AutomodSettingsView(discord.ui.View):
     def __init__(self, db, guild, settings_cog, page=1):
         super().__init__(timeout=180)
@@ -604,16 +652,16 @@ class AutomodSettingsView(discord.ui.View):
 
     @discord.ui.button(label="Previous Page", style=discord.ButtonStyle.secondary)
     async def previous_page_btn(self, interaction: discord.Interaction, _):
-        if self.page == 2:
+        if self.page > 1:
             await interaction.response.defer()
-            self.page = 1
+            self.page -= 1
             await self.async_update_view()
 
     @discord.ui.button(label="Next Page", style=discord.ButtonStyle.secondary)
     async def next_page_btn(self, interaction: discord.Interaction, _):
-        if self.page == 1:
+        if self.page < 3:
             await interaction.response.defer()
-            self.page = 2
+            self.page += 1
             await self.async_update_view()
 
     @discord.ui.button(label="Toggle Automod", style=discord.ButtonStyle.primary, emoji="🔄")
@@ -622,6 +670,9 @@ class AutomodSettingsView(discord.ui.View):
             await interaction.response.defer()
             await self.db.toggle_server_setting(self.guild.id, 'automod_enabled')
             await self.async_update_view()
+        else:
+            embed = discord.Embed(title="Info", description="This setting is on page 1.", color=discord.Color.blue())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Toggle Logging", style=discord.ButtonStyle.primary, emoji="📝")
     async def toggle_logging_btn(self, interaction: discord.Interaction, _):
@@ -629,6 +680,9 @@ class AutomodSettingsView(discord.ui.View):
             await interaction.response.defer()
             await self.db.toggle_server_setting(self.guild.id, 'automod_logging_enabled')
             await self.async_update_view()
+        else:
+            embed = discord.Embed(title="Info", description="This setting is on page 1.", color=discord.Color.blue())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Set Log Channel", style=discord.ButtonStyle.primary, emoji="📌")
     async def set_log_channel_btn(self, interaction: discord.Interaction, _):
@@ -641,6 +695,9 @@ class AutomodSettingsView(discord.ui.View):
                 settings_cog=self.settings_cog,
                 title="Set Automod Log Channel"
             ))
+        else:
+            embed = discord.Embed(title="Info", description="Log Channel setting is on page 1.", color=discord.Color.blue())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Set Mute Duration", style=discord.ButtonStyle.primary, emoji="⏱")
     async def set_mute_duration_btn(self, interaction: discord.Interaction, _):
@@ -674,17 +731,47 @@ class AutomodSettingsView(discord.ui.View):
     @discord.ui.button(label="Manage Exempt Roles", style=discord.ButtonStyle.primary, emoji="🛡")
     async def manage_exempt_roles_btn(self, interaction: discord.Interaction, _):
         if self.page == 2:
+            # Correct methods for exempt roles
+            add_method = self.db.add_automod_exempt_role
+            remove_method = self.db.remove_automod_exempt_role
             await interaction.response.send_modal(BaseRoleManagementModal(
                 db=self.db,
                 guild=self.guild,
                 update_callback=self.async_update_view,
-                add_method=self.db.add_exempt_role,
-                remove_method=self.db.remove_exempt_role,
+                add_method=add_method,
+                remove_method=remove_method,
                 success_title="Exempt Roles Updated",
                 settings_cog=self.settings_cog
             ))
         else:
             embed = discord.Embed(title="Info", description="Exempt Roles management is on the second page.", color=discord.Color.blue())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # New buttons for spam settings on page 3
+    @discord.ui.button(label="Set Spam Limit", style=discord.ButtonStyle.primary, emoji="📑")
+    async def set_spam_limit_btn(self, interaction: discord.Interaction, _):
+        if self.page == 3:
+            await interaction.response.send_modal(AutomodSpamLimitModal(
+                db=self.db,
+                guild=self.guild,
+                update_callback=self.async_update_view,
+                settings_cog=self.settings_cog
+            ))
+        else:
+            embed = discord.Embed(title="Info", description="Spam limit is on page 3.", color=discord.Color.blue())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Set Spam Window", style=discord.ButtonStyle.primary, emoji="⏳")
+    async def set_spam_window_btn(self, interaction: discord.Interaction, _):
+        if self.page == 3:
+            await interaction.response.send_modal(AutomodSpamWindowModal(
+                db=self.db,
+                guild=self.guild,
+                update_callback=self.async_update_view,
+                settings_cog=self.settings_cog
+            ))
+        else:
+            embed = discord.Embed(title="Info", description="Spam window is on page 3.", color=discord.Color.blue())
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def async_update_view(self):
@@ -832,7 +919,6 @@ class TryoutSettingsView(discord.ui.View):
             except:
                 pass
 
-# NEW Autopromotion classes
 class AutopromotionSettingsView(discord.ui.View):
     def __init__(self, db, guild, settings_cog):
         super().__init__(timeout=180)
