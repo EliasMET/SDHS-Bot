@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import math
 import aiohttp
 import asyncio
+from collections import deque
 
 # Define the check function outside the class for command permissions
 async def is_admin_or_owner(interaction: discord.Interaction) -> bool:
@@ -100,10 +101,10 @@ class AutoMod(commands.Cog):
     Provides automated moderation features such as warning users,
     monitoring messages for prohibited content, and handling timeouts.
 
-    Version: 1.6.1
+    Version: 1.6.2
     Changes:
-    - When a user mentions a protected user:
-      - They are warned and timed out as before, but their message is NOT deleted.
+    - Added spam detection: if a user sends too many messages in a short timeframe, it counts as spam.
+    - Minor optimizations.
     """
 
     def __init__(self, bot: commands.Bot):
@@ -121,6 +122,12 @@ class AutoMod(commands.Cog):
 
         self.profanity_list = []
         self.profanity_pattern = None
+
+        # Keep track of recent messages for spam detection
+        # Format: {user_id: deque_of_timestamps}
+        self.recent_messages = {}
+        self.spam_message_limit = 5     # Number of messages
+        self.spam_time_window = 5       # In seconds
 
         # Start background tasks
         self.expire_warnings_task.start()
@@ -216,8 +223,8 @@ class AutoMod(commands.Cog):
                             log_embed.add_field(name="Offending Message", value="(Not Deleted)", inline=False)
                         log_embed.set_footer(text=f"User ID: {message.author.id} | Warn ID: {warn_id}")
                         await log_channel.send(embed=log_embed)
-                else:
-                    self.bot.logger.warning(f"'automod_log_channel_id' not set for guild {message.guild.id}.")
+                    else:
+                        self.bot.logger.warning(f"'automod_log_channel_id' channel not found for guild {message.guild.id}.")
 
             self.bot.logger.info(
                 f"Handled violating message from {message.author} (ID:{message.author.id}) with reason: {reason}. "
@@ -226,12 +233,38 @@ class AutoMod(commands.Cog):
         except Exception as e:
             self.bot.logger.error(f"Failed to handle message violation: {e}")
 
+    def record_message_for_spam(self, user_id: int):
+        """
+        Record a message timestamp for spam detection.
+        Remove old timestamps outside the time window.
+        """
+        now = datetime.utcnow().timestamp()
+        if user_id not in self.recent_messages:
+            self.recent_messages[user_id] = deque()
+
+        user_deque = self.recent_messages[user_id]
+        user_deque.append(now)
+
+        # Remove timestamps older than the spam_time_window
+        while user_deque and (now - user_deque[0]) > self.spam_time_window:
+            user_deque.popleft()
+
+        return len(user_deque)
+
+    async def spam_check(self, message: discord.Message) -> bool:
+        """
+        Check if a user is spamming based on recent message timestamps.
+        Returns True if the user is spamming.
+        """
+        count = self.record_message_for_spam(message.author.id)
+        return count > self.spam_message_limit
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """
         Main entry point for message checks.
         """
-        if message.author.bot:
+        if message.author.bot or not message.guild:
             return
 
         server_settings = await self.get_server_settings(message.guild.id)
@@ -255,7 +288,6 @@ class AutoMod(commands.Cog):
                 automod_mute_duration = server_settings.get('automod_mute_duration', 3600)
                 duration = timedelta(seconds=automod_mute_duration)
                 try:
-                    # Handle the violation without logging the warn and without deleting the message
                     await self.handle_message_violation(
                         message,
                         reason="Mentioned a protected user without required roles.",
@@ -263,7 +295,7 @@ class AutoMod(commands.Cog):
                         delete_message=False
                     )
 
-                    # Log the timeout action separately
+                    # Log the timeout action if enabled
                     if server_settings.get('automod_logging_enabled'):
                         log_channel_id = server_settings.get('automod_log_channel_id')
                         if log_channel_id:
@@ -284,11 +316,10 @@ class AutoMod(commands.Cog):
                                 self.bot.logger.error(f"Log channel with ID {log_channel_id} not found in guild {message.guild.id}.")
                         else:
                             self.bot.logger.warning(f"'automod_log_channel_id' not set for guild {message.guild.id}.")
-                    await asyncio.sleep(10)
-                    # The moderation message was already deleted in handle_message_violation
+
                     self.bot.logger.info(
-                        f"User {message.author} (ID:{message.author.id}) timed out for mentioning protected user(s) "
-                        f"without exemption. Duration: {duration}, Message: '{message.content}'"
+                        f"User {message.author} (ID:{message.author.id}) timed out for mentioning protected user(s) without exemption. "
+                        f"Duration: {duration}, Message: '{message.content}'"
                     )
                 except discord.Forbidden:
                     self.bot.logger.error(f"Missing permissions to timeout user {message.author.id}.")
@@ -299,6 +330,14 @@ class AutoMod(commands.Cog):
         # If can bypass general automod (owner/admin), do nothing further
         if can_bypass_general:
             return
+
+        # Spam check
+        try:
+            if await self.spam_check(message):
+                await self.handle_message_violation(message, "Spamming.")
+                return
+        except Exception as e:
+            self.bot.logger.error(f"Error during spam check for message from {message.author}: {e}")
 
         # Check against prohibited content if not bypassed
         try:
@@ -312,8 +351,9 @@ class AutoMod(commands.Cog):
             self.bot.logger.error(f"Error during AutoMod checks for message from {message.author}: {e}")
 
     async def get_server_settings(self, guild_id: int):
-        if guild_id in self.server_settings_cache:
-            return self.server_settings_cache[guild_id]
+        cached = self.server_settings_cache.get(guild_id)
+        if cached is not None:
+            return cached
 
         try:
             settings = await self.db.get_server_settings(guild_id)
@@ -340,6 +380,7 @@ class AutoMod(commands.Cog):
 
     @tasks.loop(minutes=10)
     async def expire_warnings_task(self):
+        # This task used to remove expired warnings, but now just logs a debug message.
         self.bot.logger.debug("Checked expired warnings, but not removing them anymore.")
 
     @tasks.loop(count=1)
@@ -595,7 +636,7 @@ class AutoMod(commands.Cog):
 
     @commands.Cog.listener()
     async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        if hasattr(error, "handled") and error.handled:
+        if getattr(error, "handled", False):
             return
 
         embed = discord.Embed(
