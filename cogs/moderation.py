@@ -21,14 +21,7 @@ async def is_admin_or_owner(interaction: discord.Interaction) -> bool:
 
 # Define the check function for admin, owner, or allowed roles outside the class
 async def is_moderator(interaction: discord.Interaction) -> bool:
-    """
-    Check if the user is an administrator, the bot owner, or has an allowed role.
-
-    :param interaction: The interaction context.
-    :return: True if user is admin, owner, or has an allowed role, else raises MissingPermissions.
-    """
     bot = interaction.client
-    # Cache owner_id if not already cached
     if not hasattr(bot, 'owner_id'):
         app_info = await bot.application_info()
         bot.owner_id = app_info.owner.id
@@ -37,7 +30,6 @@ async def is_moderator(interaction: discord.Interaction) -> bool:
         return True
     if interaction.user.guild_permissions.administrator:
         return True
-    # Fetch allowed roles from the database
     allowed_roles = await bot.database.get_moderation_allowed_roles(interaction.guild.id)
     user_roles = [role.id for role in interaction.user.roles]
     if any(role_id in allowed_roles for role_id in user_roles):
@@ -45,37 +37,25 @@ async def is_moderator(interaction: discord.Interaction) -> bool:
     raise app_commands.MissingPermissions(['administrator'])
 
 class Moderation(commands.Cog, name="moderation"):
-    """
-    A cog for server moderation commands.
-    """
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db = bot.database  # Ensure the database manager is initialized
+        self.db = bot.database
 
     async def cog_load(self):
-        """
-        Initialize the cog by setting up the database and caching owner_id.
-        """
-        self.db = self.bot.database  # Access DatabaseManager from the bot instance
+        self.db = self.bot.database
         if not self.db:
             self.bot.logger.error("DatabaseManager is not initialized in the bot.")
             raise ValueError("DatabaseManager is not initialized in the bot.")
-        # Ensure owner_id is cached
         if not hasattr(self.bot, 'owner_id'):
             app_info = await self.bot.application_info()
             self.bot.owner_id = app_info.owner.id
         self.bot.logger.info("Moderation Cog loaded successfully.")
 
-    # Ban Command
     @app_commands.command(name="ban", description="Ban a member from the server.")
     @app_commands.describe(member="The member to ban.", reason="Reason for banning the member.")
     @app_commands.check(is_moderator)
     async def ban(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
-        """
-        Bans a member from the server.
-        """
-        await interaction.response.defer(ephemeral=True)  # Use the thinking function
+        await interaction.response.defer(ephemeral=True)
         try:
             await member.ban(reason=reason, delete_message_days=0)
             await interaction.followup.send(
@@ -86,7 +66,6 @@ class Moderation(commands.Cog, name="moderation"):
                 ephemeral=True
             )
             self.bot.logger.info(f"{interaction.user} banned {member} for reason: {reason}")
-            # Log the action
             await self.log_action(interaction.guild, "Ban", interaction.user, member, reason)
         except discord.Forbidden:
             await interaction.followup.send(
@@ -107,14 +86,10 @@ class Moderation(commands.Cog, name="moderation"):
             )
             self.bot.logger.error(f"HTTPException while banning {member}: {e}")
 
-    # Global Ban Command (using updated API endpoints)
     @app_commands.command(name="global_ban", description="Globally ban a user.")
     @app_commands.describe(user="The user to globally ban.", reason="Reason for the ban.")
     @app_commands.check(is_admin_or_owner)
     async def global_ban(self, interaction: discord.Interaction, user: discord.User, reason: str = "No reason provided."):
-        """
-        Globally bans a user by fetching their Roblox User ID from Bloxlink and storing in the database.
-        """
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild.id
         bloxlink_api_key = os.getenv("BLOXLINK_TOKEN")
@@ -130,7 +105,6 @@ class Moderation(commands.Cog, name="moderation"):
             return
 
         try:
-            # Fetch Roblox User ID via Bloxlink (new endpoint)
             bloxlink_url = f"https://api.blox.link/v4/public/guilds/{guild_id}/discord-to-roblox/{user.id}"
             headers = {"Authorization": bloxlink_api_key}
             async with aiohttp.ClientSession() as session:
@@ -145,7 +119,6 @@ class Moderation(commands.Cog, name="moderation"):
                     roblox_user_id = bloxlink_data["robloxID"]
                     self.bot.logger.info(f"Fetched Roblox User ID {roblox_user_id} for {user} via Bloxlink.")
 
-                    # Fetch Roblox username using Roblox's users endpoint
                     roblox_user_url = f"https://users.roblox.com/v1/users/{roblox_user_id}"
                     async with session.get(roblox_user_url) as roblox_user_response:
                         if roblox_user_response.status != 200:
@@ -155,8 +128,8 @@ class Moderation(commands.Cog, name="moderation"):
                         roblox_user_data = await roblox_user_response.json()
                         roblox_username = roblox_user_data.get("name", "Unknown")
 
-            # Add user to global bans in the database
-            await self.db.add_global_ban(user.id, roblox_user_id, reason)
+            # Add user to global bans in the database including the moderator's ID
+            await self.db.add_global_ban(user.id, roblox_user_id, reason, interaction.user.id)
 
             await interaction.followup.send(
                 embed=discord.Embed(
@@ -219,15 +192,11 @@ class Moderation(commands.Cog, name="moderation"):
             )
             self.bot.logger.error(f"Exception while removing global ban for {user}: {e}")
 
-    # Kick Command
     @app_commands.command(name="kick", description="Kick a member from the server.")
     @app_commands.describe(member="The member to kick.", reason="Reason for kicking the member.")
     @app_commands.check(is_moderator)
     async def kick(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
-        """
-        Kicks a member from the server.
-        """
-        await interaction.response.defer(ephemeral=True)  # Use the thinking function
+        await interaction.response.defer(ephemeral=True)
         try:
             await member.kick(reason=reason)
             await interaction.followup.send(
@@ -238,7 +207,6 @@ class Moderation(commands.Cog, name="moderation"):
                 ephemeral=True
             )
             self.bot.logger.info(f"{interaction.user} kicked {member} for reason: {reason}")
-            # Log the action
             await self.log_action(interaction.guild, "Kick", interaction.user, member, reason)
         except discord.Forbidden:
             await interaction.followup.send(
@@ -259,15 +227,11 @@ class Moderation(commands.Cog, name="moderation"):
             )
             self.bot.logger.error(f"HTTPException while kicking {member}: {e}")
 
-    # Timeout Command
     @app_commands.command(name="timeout", description="Timeout a member for a specified duration.")
-    @app_commands.describe(member="The member to timeout.", duration="Duration for the timeout (e.g., 10m, 2h, 1d).", reason="Reason for the timeout.")
+    @app_commands.describe(member="The member to timeout.", duration="Duration (e.g. 10m, 2h, 1d).", reason="Reason for the timeout.")
     @app_commands.check(is_moderator)
     async def timeout_member(self, interaction: discord.Interaction, member: discord.Member, duration: str, reason: str = "No reason provided."):
-        """
-        Temporarily restricts a member from interacting in the server.
-        """
-        await interaction.response.defer(ephemeral=True)  # Use the thinking function
+        await interaction.response.defer(ephemeral=True)
         try:
             timeout_seconds = self.parse_duration(duration)
             if timeout_seconds is None:
@@ -282,7 +246,6 @@ class Moderation(commands.Cog, name="moderation"):
                 ephemeral=True
             )
             self.bot.logger.info(f"{interaction.user} timed out {member} for {duration} with reason: {reason}")
-            # Log the action
             await self.log_action(interaction.guild, "Timeout", interaction.user, member, reason, duration)
         except ValueError as ve:
             await interaction.followup.send(
@@ -313,10 +276,6 @@ class Moderation(commands.Cog, name="moderation"):
             self.bot.logger.error(f"HTTPException while timing out {member}: {e}")
 
     def parse_duration(self, duration_str: str) -> int:
-        """
-        Parses a duration string into seconds.
-        Supported formats: Xm, Xh, Xd (minutes, hours, days)
-        """
         pattern = re.compile(r'^(?P<value>\d+)(?P<unit>[mhd])$')
         match = pattern.match(duration_str.lower())
         if not match:
@@ -332,18 +291,13 @@ class Moderation(commands.Cog, name="moderation"):
         else:
             return None
 
-    # Lock Channel Command
     @app_commands.command(name="lock", description="Lock a specific text channel.")
-    @app_commands.describe(channel="The channel to lock.", reason="Reason for locking the channel.")
+    @app_commands.describe(channel="The channel to lock.", reason="Reason for locking.")
     @app_commands.check(is_moderator)
     async def lock_channel(self, interaction: discord.Interaction, channel: discord.TextChannel = None, reason: str = "No reason provided."):
-        """
-        Locks a specific text channel by preventing @everyone from sending messages.
-        """
-        await interaction.response.defer(ephemeral=True)  # Use the thinking function
+        await interaction.response.defer(ephemeral=True)
         channel = channel or interaction.channel
         try:
-            # Check if @everyone already cannot send messages
             can_send_messages = channel.permissions_for(interaction.guild.default_role).send_messages
             if can_send_messages is False:
                 await interaction.followup.send(
@@ -356,15 +310,11 @@ class Moderation(commands.Cog, name="moderation"):
                 self.bot.logger.info(f"{interaction.user} attempted to lock {channel}, but it was already locked.")
                 return
 
-            # Lock the channel
             overwrite = channel.overwrites_for(interaction.guild.default_role)
             overwrite.send_messages = False
             await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite, reason=reason)
 
-            # Record the locked channel in the database
             await self.db.lock_channel_in_db(interaction.guild.id, channel.id)
-
-            # Send a message in the locked channel indicating the reason
             await channel.send(
                 embed=discord.Embed(
                     description=f"🔒 This channel has been locked by {interaction.user.mention}.\n**Reason:** {reason}",
@@ -380,7 +330,6 @@ class Moderation(commands.Cog, name="moderation"):
                 ephemeral=True
             )
             self.bot.logger.info(f"{interaction.user} locked {channel} for reason: {reason}")
-            # Log the action
             await self.log_channel_action(interaction.guild, "Lock Channel", interaction.user, channel, reason)
         except discord.Forbidden:
             await interaction.followup.send(
@@ -401,18 +350,13 @@ class Moderation(commands.Cog, name="moderation"):
             )
             self.bot.logger.error(f"HTTPException while locking {channel}: {e}")
 
-    # Unlock Channel Command
     @app_commands.command(name="unlock", description="Unlock a specific text channel.")
-    @app_commands.describe(channel="The channel to unlock.", reason="Reason for unlocking the channel.")
+    @app_commands.describe(channel="The channel to unlock.", reason="Reason for unlocking.")
     @app_commands.check(is_moderator)
     async def unlock_channel(self, interaction: discord.Interaction, channel: discord.TextChannel = None, reason: str = "No reason provided."):
-        """
-        Unlocks a specific text channel by allowing @everyone to send messages.
-        """
-        await interaction.response.defer(ephemeral=True)  # Use the thinking function
+        await interaction.response.defer(ephemeral=True)
         channel = channel or interaction.channel
         try:
-            # Check if the bot had previously locked this channel
             is_locked_by_bot = await self.db.is_channel_locked(interaction.guild.id, channel.id)
             if not is_locked_by_bot:
                 await interaction.followup.send(
@@ -425,15 +369,11 @@ class Moderation(commands.Cog, name="moderation"):
                 self.bot.logger.info(f"{interaction.user} attempted to unlock {channel}, but it was not locked by the bot.")
                 return
 
-            # Unlock the channel
             overwrite = channel.overwrites_for(interaction.guild.default_role)
             overwrite.send_messages = True
             await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite, reason=reason)
 
-            # Remove the locked channel from the database
             await self.db.unlock_channel_in_db(interaction.guild.id, channel.id)
-
-            # Send a message in the unlocked channel indicating the reason
             await channel.send(
                 embed=discord.Embed(
                     description=f"🔓 This channel has been unlocked by {interaction.user.mention}.\n**Reason:** {reason}",
@@ -449,7 +389,6 @@ class Moderation(commands.Cog, name="moderation"):
                 ephemeral=True
             )
             self.bot.logger.info(f"{interaction.user} unlocked {channel} for reason: {reason}")
-            # Log the action
             await self.log_channel_action(interaction.guild, "Unlock Channel", interaction.user, channel, reason)
         except discord.Forbidden:
             await interaction.followup.send(
@@ -470,21 +409,16 @@ class Moderation(commands.Cog, name="moderation"):
             )
             self.bot.logger.error(f"HTTPException while unlocking {channel}: {e}")
 
-    # Lock All Channels Command
     @app_commands.command(name="lockall", description="Lock all text channels in the server.")
     @app_commands.describe(reason="Reason for locking all channels.")
     @app_commands.check(is_moderator)
     async def lock_all_channels(self, interaction: discord.Interaction, reason: str = "No reason provided."):
-        """
-        Locks all text channels in the server by preventing @everyone from sending messages.
-        """
-        await interaction.response.defer(ephemeral=True)  # Use the thinking function
+        await interaction.response.defer(ephemeral=True)
         try:
             text_channels = interaction.guild.text_channels
             total_channels = len(text_channels)
             locked_channels = 0
 
-            # Send initial progress embed
             progress_embed = discord.Embed(
                 title="🔒 Locking All Channels",
                 description=f"Locked {locked_channels}/{total_channels} channels.",
@@ -506,7 +440,6 @@ class Moderation(commands.Cog, name="moderation"):
                     await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite, reason=reason)
 
                     await self.db.lock_channel_in_db(interaction.guild.id, channel.id)
-
                     await channel.send(
                         embed=discord.Embed(
                             description=f"🔒 This channel has been locked by {interaction.user.mention}.\n**Reason:** {reason}",
@@ -551,15 +484,11 @@ class Moderation(commands.Cog, name="moderation"):
                 ephemeral=True
             )
 
-    # Unlock All Channels Command
     @app_commands.command(name="unlockall", description="Unlock all text channels in the server.")
     @app_commands.describe(reason="Reason for unlocking all channels.")
     @app_commands.check(is_moderator)
     async def unlock_all_channels(self, interaction: discord.Interaction, reason: str = "No reason provided."):
-        """
-        Unlocks all text channels in the server by allowing @everyone to send messages.
-        """
-        await interaction.response.defer(ephemeral=True)  # Use the thinking function
+        await interaction.response.defer(ephemeral=True)
         try:
             text_channels = interaction.guild.text_channels
             total_channels = len(text_channels)
@@ -586,7 +515,6 @@ class Moderation(commands.Cog, name="moderation"):
                     await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite, reason=reason)
 
                     await self.db.unlock_channel_in_db(interaction.guild.id, channel.id)
-
                     await channel.send(
                         embed=discord.Embed(
                             description=f"🔓 This channel has been unlocked by {interaction.user.mention}.\n**Reason:** {reason}",
@@ -632,9 +560,6 @@ class Moderation(commands.Cog, name="moderation"):
             )
 
     async def log_action(self, guild: discord.Guild, action: str, executor: discord.User, target: discord.Member, reason: str, duration: str = None):
-        """
-        Logs a moderation action to the designated moderation log channel.
-        """
         try:
             log_channel_id = await self.db.get_mod_log_channel(guild.id)
             if not log_channel_id:
@@ -661,9 +586,6 @@ class Moderation(commands.Cog, name="moderation"):
             self.bot.logger.error(f"Failed to log moderation action: {e}")
 
     async def log_channel_action(self, guild: discord.Guild, action: str, executor: discord.User, channel: discord.TextChannel, reason: str):
-        """
-        Logs a channel moderation action to the designated moderation log channel.
-        """
         try:
             log_channel_id = await self.db.get_mod_log_channel(guild.id)
             if not log_channel_id:
@@ -687,12 +609,8 @@ class Moderation(commands.Cog, name="moderation"):
         except Exception as e:
             self.bot.logger.error(f"Failed to log channel moderation action: {e}")
 
-    # Cog-level error handler
     @commands.Cog.listener()
     async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        """
-        Handles errors for all commands in this cog.
-        """
         if isinstance(error, app_commands.MissingPermissions):
             embed = discord.Embed(
                 title="Missing Permissions",
@@ -718,7 +636,6 @@ class Moderation(commands.Cog, name="moderation"):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             self.bot.logger.error(f"Unhandled error in command {interaction.command.name}: {error}")
 
-# Setup function to add the cog to the bot
 async def setup(bot: commands.Bot):
     await bot.add_cog(Moderation(bot))
     bot.logger.info("Moderation Cog has been added to the bot.")
