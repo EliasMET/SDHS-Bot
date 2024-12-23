@@ -1,5 +1,3 @@
-# automod.py
-
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -88,8 +86,6 @@ class AutoMod(commands.Cog):
     """
     AutoMod Cog
     Provides automated moderation features.
-
-    Version: Adjusted to use db settings for spam detection.
     """
 
     def __init__(self, bot: commands.Bot):
@@ -143,6 +139,16 @@ class AutoMod(commands.Cog):
                 reason=reason
             )
 
+            # Create a new random case ID for this violation
+            case_id = await self.db.add_case(
+                server_id=message.guild.id,
+                user_id=message.author.id,
+                moderator_id=self.bot.user.id,
+                action_type="warn",
+                reason=reason,
+                extra={"warn_id": warn_id}
+            )
+
             warning_msg = (
                 f"{message.author.mention}, your message violated the server rules.\n"
                 f"**Reason:** {reason}"
@@ -169,6 +175,16 @@ class AutoMod(commands.Cog):
                 )
                 await message.channel.send(timeout_notice)
 
+                # Add a separate "mute" case if we do a timeout
+                await self.db.add_case(
+                    server_id=message.guild.id,
+                    user_id=message.author.id,
+                    moderator_id=self.bot.user.id,
+                    action_type="mute",
+                    reason=f"Auto mute for {warning_count} warnings",
+                    extra={"duration": duration_str}
+                )
+
             await asyncio.sleep(10)
             await moderation_message.delete()
 
@@ -189,7 +205,7 @@ class AutoMod(commands.Cog):
                             log_embed.add_field(name="Offending Message", value=f"||{message.content}||", inline=False)
                         else:
                             log_embed.add_field(name="Offending Message", value="(Not Deleted)", inline=False)
-                        log_embed.set_footer(text=f"User ID: {message.author.id} | Warn ID: {warn_id}")
+                        log_embed.set_footer(text=f"User ID: {message.author.id} | Warn ID: {warn_id} | Case ID: {case_id}")
                         await log_channel.send(embed=log_embed)
 
             self.bot.logger.info(
@@ -384,6 +400,16 @@ class AutoMod(commands.Cog):
                 reason=reason,
             )
 
+            # Random string case ID
+            case_id = await self.db.add_case(
+                server_id=interaction.guild.id,
+                user_id=user.id,
+                moderator_id=interaction.user.id,
+                action_type="warn",
+                reason=reason,
+                extra={"warn_id": warn_id}
+            )
+
             embed = discord.Embed(
                 title="✅ Warning Issued",
                 color=0x00FF00,
@@ -392,6 +418,7 @@ class AutoMod(commands.Cog):
             embed.add_field(name="User", value=user.mention, inline=True)
             embed.add_field(name="Reason", value=reason, inline=False)
             embed.add_field(name="Warning ID", value=str(warn_id), inline=True)
+            embed.add_field(name="Case ID", value=str(case_id), inline=True)
             embed.set_footer(text=f"Moderator: {interaction.user} (ID: {interaction.user.id})")
             await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -404,6 +431,7 @@ class AutoMod(commands.Cog):
                 dm_embed.add_field(name="Server", value=interaction.guild.name, inline=False)
                 dm_embed.add_field(name="Reason", value=reason, inline=False)
                 dm_embed.add_field(name="Warning ID", value=str(warn_id), inline=True)
+                dm_embed.add_field(name="Case ID", value=str(case_id), inline=True)
                 dm_embed.set_footer(text="Please adhere to the server rules to avoid further actions.")
                 await user.send(embed=dm_embed)
             except discord.Forbidden:
@@ -447,70 +475,22 @@ class AutoMod(commands.Cog):
                             log_embed.set_footer(text=f"User ID: {user.id}")
                             await log_channel.send(embed=log_embed)
 
+                # Also log a separate "mute" case if you want:
+                await self.db.add_case(
+                    server_id=interaction.guild.id,
+                    user_id=user.id,
+                    moderator_id=interaction.user.id,
+                    action_type="mute",
+                    reason=f"Reached {warning_count} warnings (auto-timeout)",
+                    extra={"duration": duration_str}
+                )
+
         except Exception as e:
             self.bot.logger.error(f"Failed to issue warning to {user}: {e}")
             embed = discord.Embed(
                 title="❌ Error",
                 description="An error occurred while issuing the warning.",
                 color=0x8B0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="warns", description="View all warnings for a user.")
-    @app_commands.describe(user="The user to view warnings for.")
-    @app_commands.check(is_admin_or_owner)
-    async def warns(self, interaction: discord.Interaction, user: discord.Member):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            all_warnings = await self.db.get_warnings(user_id=user.id, server_id=interaction.guild.id)
-        except Exception as e:
-            self.bot.logger.error(f"Failed to retrieve warnings for {user}: {e}")
-            embed = discord.Embed(
-                title="❌ Error",
-                description="An error occurred while fetching warnings.",
-                color=0x8B0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-
-        warnings = [
-            w for w in all_warnings
-            if not is_warning_expired(int(w[4]))
-        ]
-
-        if warnings:
-            if len(warnings) > 7:
-                view = WarningsView(warnings, user)
-                embed = view.create_embed()
-                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-            else:
-                embed = discord.Embed(
-                    title=f"Warnings for {user}",
-                    color=0xFF0000,
-                    timestamp=datetime.utcnow()
-                )
-                for w in warnings:
-                    warn_id = w[5]
-                    reason = w[3]
-                    moderator_id = w[2]
-                    timestamp_val = int(w[4])
-                    embed.add_field(
-                        name=f"Warning ID: {warn_id}",
-                        value=(
-                            f"**Reason:** {reason}\n"
-                            f"**Moderator:** <@{moderator_id}>\n"
-                            f"**Date:** <t:{timestamp_val}:F>"
-                        ),
-                        inline=False,
-                    )
-                await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            embed = discord.Embed(
-                title="No Warnings Found",
-                description=f"{user.mention} has no recorded non-expired warnings.",
-                color=0x00FF00,
                 timestamp=datetime.utcnow()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)

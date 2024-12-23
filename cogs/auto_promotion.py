@@ -1,13 +1,9 @@
+import logging
 import discord
 from discord.ext import commands
 import aiohttp
 import os
 import asyncio
-import logging
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)  # Set to INFO to see more logs. Adjust as needed.
-logger = logging.getLogger(__name__)
 
 class AutoPromotion(commands.Cog, name="AutoPromotion"):
     """
@@ -30,32 +26,28 @@ class AutoPromotion(commands.Cog, name="AutoPromotion"):
     async def cog_load(self):
         self.db = getattr(self.bot, 'database', None)
         if self.db is None:
-            logger.warning("Database connection not found. AutoPromotion cog may not function properly.")
+            self.bot.logger.warning("Database connection not found. AutoPromotion cog may not function properly.")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Ignore bots, DMs, or if database not available
         if message.author.bot or not message.guild or not self.db:
             return
 
-        # Fetch the autopromotion channel ID from the database
         try:
             channel_id = await self.db.get_autopromotion_channel_id(message.guild.id)
         except Exception as e:
-            logger.error(f"Error fetching autopromotion channel ID for guild {message.guild.id}: {e}")
+            self.bot.logger.error(f"Error fetching autopromotion channel ID for guild {message.guild.id}: {e}")
             return
 
         if channel_id is None:
-            logger.debug(f"No autopromotion channel configured for guild {message.guild.id}. Ignoring message.")
+            self.bot.logger.debug(f"No autopromotion channel configured for guild {message.guild.id}. Ignoring message.")
             return
 
         if message.channel.id != channel_id:
-            # Not the autopromotion channel
             return
 
-        logger.debug("Processing message in autopromotion channel.")
+        self.bot.logger.debug("Processing message in autopromotion channel.")
 
-        # Identify "Passed:" line in the message
         passed_line = None
         for line in message.content.split('\n'):
             if line.strip().lower().startswith("passed:"):
@@ -63,22 +55,21 @@ class AutoPromotion(commands.Cog, name="AutoPromotion"):
                 break
 
         if not passed_line:
-            logger.debug("No 'Passed:' line found in message.")
+            self.bot.logger.debug("No 'Passed:' line found in message.")
             return
 
         passed_part = passed_line.split(":", 1)[1].strip() if ":" in passed_line else ""
         if not passed_part:
-            logger.debug("'Passed:' line found but no usernames listed.")
+            self.bot.logger.debug("'Passed:' line found but no usernames listed.")
             return
 
         passed_usernames = [u.strip() for u in passed_part.split(",") if u.strip()]
         if not passed_usernames:
-            logger.debug("No valid usernames found after 'Passed:'.")
+            self.bot.logger.debug("No valid usernames found after 'Passed:'.")
             return
 
-        logger.info(f"Found passed users: {passed_usernames}")
+        self.bot.logger.info(f"Found passed users: {passed_usernames}")
 
-        # Send confirmation embed
         passed_embed = discord.Embed(
             title="Passed Users",
             description="The following users have passed:\n" + "\n".join(passed_usernames),
@@ -89,9 +80,9 @@ class AutoPromotion(commands.Cog, name="AutoPromotion"):
         try:
             reply_msg = await message.reply(embed=passed_embed)
             await reply_msg.add_reaction("✅")
-            logger.info("Confirmation embed sent and reaction added.")
+            self.bot.logger.info("Confirmation embed sent and reaction added.")
         except discord.DiscordException as e:
-            logger.error(f"Error sending confirmation embed or adding reaction: {e}")
+            self.bot.logger.error(f"Error sending confirmation embed or adding reaction: {e}")
             return
 
         def check(reaction: discord.Reaction, user: discord.User):
@@ -101,10 +92,9 @@ class AutoPromotion(commands.Cog, name="AutoPromotion"):
                 and not user.bot
             )
 
-        # Wait for confirmation reaction
         try:
             reaction, user = await self.bot.wait_for("reaction_add", timeout=180.0, check=check)
-            logger.info(f"Received confirmation from {user}.")
+            self.bot.logger.info(f"Received confirmation from {user}.")
         except asyncio.TimeoutError:
             timeout_embed = discord.Embed(
                 title="No Confirmation",
@@ -114,20 +104,18 @@ class AutoPromotion(commands.Cog, name="AutoPromotion"):
             try:
                 await reply_msg.reply(embed=timeout_embed)
             except discord.DiscordException as e:
-                logger.error(f"Error sending timeout embed: {e}")
+                self.bot.logger.error(f"Error sending timeout embed: {e}")
             return
         except discord.DiscordException as e:
-            logger.error(f"Error waiting for reaction: {e}")
+            self.bot.logger.error(f"Error waiting for reaction: {e}")
             return
 
-        # Delete the confirmation message
         try:
             await reply_msg.delete()
-            logger.debug("Confirmation message deleted.")
+            self.bot.logger.debug("Confirmation message deleted.")
         except discord.DiscordException as e:
-            logger.error(f"Error deleting confirmation message: {e}")
+            self.bot.logger.error(f"Error deleting confirmation message: {e}")
 
-        # Send processing embed
         try:
             processing_embed = discord.Embed(
                 title="Processing Promotions",
@@ -135,39 +123,36 @@ class AutoPromotion(commands.Cog, name="AutoPromotion"):
                 color=discord.Color.yellow()
             )
             processing_msg = await message.channel.send(embed=processing_embed)
-            logger.info("Processing embed sent.")
+            self.bot.logger.info("Processing embed sent.")
         except discord.DiscordException as e:
-            logger.error(f"Error sending processing embed: {e}")
+            self.bot.logger.error(f"Error sending processing embed: {e}")
             return
 
         results = []
 
-        # If no API token set, cannot proceed
         if not self.promote_api_token:
-            logger.warning("Promote API token not configured. Promotions cannot proceed.")
+            self.bot.logger.warning("Promote API token not configured. Promotions cannot proceed.")
             results = [(uname, False, "No API token configured") for uname in passed_usernames]
         else:
-            # Proceed with promotions
             try:
                 async with aiohttp.ClientSession() as session:
                     roblox_ids_map = await self.fetch_roblox_ids_bulk(session, passed_usernames)
-                    logger.debug(f"Roblox IDs fetched: {roblox_ids_map}")
+                    self.bot.logger.debug(f"Roblox IDs fetched: {roblox_ids_map}")
 
                     for uname in passed_usernames:
                         roblox_id = roblox_ids_map.get(uname.lower())
                         if roblox_id is None:
-                            logger.warning(f"Roblox ID not found for username: {uname}")
+                            self.bot.logger.warning(f"Roblox ID not found for username: {uname}")
                             results.append((uname, False, "Roblox user not found"))
                             continue
 
                         success, msg = await self.promote_user(session, roblox_id)
                         results.append((uname, success, msg))
             except Exception as e:
-                logger.error(f"Unexpected error during promotion: {e}")
+                self.bot.logger.error(f"Unexpected error during promotion: {e}")
                 if not results:
                     results = [(uname, False, "Unexpected error during promotion") for uname in passed_usernames]
 
-        # Summarize results
         success_count = sum(1 for r in results if r[1])
         fail_count = len(results) - success_count
         results_lines = [
@@ -183,18 +168,13 @@ class AutoPromotion(commands.Cog, name="AutoPromotion"):
         )
         results_embed.add_field(name="Summary", value=f"Success: {success_count}\nFailed: {fail_count}", inline=False)
 
-        # Edit the processing message to show results
         try:
             await processing_msg.edit(embed=results_embed)
-            logger.info("Promotion results posted.")
+            self.bot.logger.info("Promotion results posted.")
         except discord.DiscordException as e:
-            logger.error(f"Error editing processing embed with results: {e}")
+            self.bot.logger.error(f"Error editing processing embed with results: {e}")
 
     async def fetch_roblox_ids_bulk(self, session: aiohttp.ClientSession, usernames: list):
-        """
-        Fetch Roblox IDs in bulk from a list of usernames using the Roblox API.
-        Returns a dictionary mapping lowercase username to Roblox user ID.
-        """
         url = self.roblox_user_lookup_endpoint
         payload = {
             "usernames": usernames,
@@ -210,22 +190,18 @@ class AutoPromotion(commands.Cog, name="AutoPromotion"):
                         uid = user_data.get("id")
                         if uid is not None:
                             ids_map[uname] = uid
-                    logger.info(f"Fetched Roblox IDs for {len(ids_map)} users.")
+                    self.bot.logger.info(f"Fetched Roblox IDs for {len(ids_map)} users.")
                 else:
-                    logger.error(f"Failed to fetch Roblox IDs. HTTP Status: {resp.status}")
+                    self.bot.logger.error(f"Failed to fetch Roblox IDs. HTTP Status: {resp.status}")
         except aiohttp.ClientError as e:
-            logger.error(f"HTTP request error while fetching Roblox IDs: {e}")
+            self.bot.logger.error(f"HTTP request error while fetching Roblox IDs: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error while fetching Roblox IDs: {e}")
+            self.bot.logger.error(f"Unexpected error while fetching Roblox IDs: {e}")
         return ids_map
 
     async def promote_user(self, session: aiohttp.ClientSession, roblox_id: int):
-        """
-        Promote a Roblox user by their Roblox ID using the configured API.
-        Returns a tuple (success: bool, message: str).
-        """
         if not self.api_key:
-            logger.error("API_KEY is not set. Cannot promote user.")
+            self.bot.logger.error("API_KEY is not set. Cannot promote user.")
             return False, "API key not configured"
 
         headers = {
@@ -240,21 +216,20 @@ class AutoPromotion(commands.Cog, name="AutoPromotion"):
                     data = await resp.json()
                     response_msg = data.get("msg") or data.get("error") or ""
                 except aiohttp.ContentTypeError:
-                    # Not JSON response
                     response_msg = await resp.text()
 
                 if resp.status == 200:
-                    logger.info(f"Successfully promoted Roblox ID {roblox_id}.")
+                    self.bot.logger.info(f"Successfully promoted Roblox ID {roblox_id}.")
                     return True, "Promoted"
                 else:
                     fail_reason = response_msg.strip() or f"HTTP {resp.status}"
-                    logger.warning(f"Promotion failed for Roblox ID {roblox_id}: {fail_reason}")
+                    self.bot.logger.warning(f"Promotion failed for Roblox ID {roblox_id}: {fail_reason}")
                     return False, fail_reason
         except aiohttp.ClientError as e:
-            logger.error(f"HTTP request error while promoting Roblox ID {roblox_id}: {e}")
+            self.bot.logger.error(f"HTTP request error while promoting Roblox ID {roblox_id}: {e}")
             return False, "Request Exception"
         except Exception as e:
-            logger.error(f"Unexpected error while promoting Roblox ID {roblox_id}: {e}")
+            self.bot.logger.error(f"Unexpected error while promoting Roblox ID {roblox_id}: {e}")
             return False, "Unexpected Error"
 
 async def setup(bot: commands.Bot):

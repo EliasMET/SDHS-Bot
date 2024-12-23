@@ -1,6 +1,9 @@
 import logging
+import random  # NEW
+import string  # NEW
 from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import DuplicateKeyError  # NEW
 
 class DatabaseManager:
     def __init__(self, *, db: AsyncIOMotorDatabase) -> None:
@@ -10,7 +13,18 @@ class DatabaseManager:
     async def initialize_database(self):
         await self.db["warns"].create_index([("user_id", 1), ("server_id", 1)])
         await self.db["server_data"].create_index([("server_id", 1)], unique=True)
+
+        # We use a compound unique index (server_id + case_id)
+        # so that each server can have distinct random case IDs.
+        await self.db["cases"].create_index(
+            [("server_id", 1), ("case_id", 1)],
+            unique=True
+        )
         self.logger.info("Database initialized.")
+
+    #
+    # ------------- WARN SYSTEM (unchanged) -------------
+    #
 
     async def add_warn(self, user_id: int, server_id: int, moderator_id: int, reason: str) -> int:
         last_warn = await self.db["warns"].find({"user_id": str(user_id), "server_id": str(server_id)}) \
@@ -69,6 +83,10 @@ class DatabaseManager:
             removed = result.deleted_count
         return removed
 
+    #
+    # ------------- SERVER DATA (unchanged) -------------
+    #
+
     async def _get_server_data(self, server_id: int) -> dict:
         data = await self.db["server_data"].find_one({"server_id": str(server_id)})
         if not data:
@@ -81,8 +99,8 @@ class DatabaseManager:
                     "tryout_channel_id": None,
                     "mod_log_channel_id": None,
                     "automod_mute_duration": 3600,
-                    "automod_spam_limit": 5,    # Default spam limit
-                    "automod_spam_window": 5    # Default spam time window
+                    "automod_spam_limit": 5,
+                    "automod_spam_window": 5
                 },
                 "tryout_groups": [],
                 "tryout_required_roles": [],
@@ -96,7 +114,6 @@ class DatabaseManager:
             }
             await self.db["server_data"].insert_one(data)
         else:
-            # Ensure new fields exist
             changed = False
             if "automod_spam_limit" not in data["settings"]:
                 data["settings"]["automod_spam_limit"] = 5
@@ -370,6 +387,10 @@ class DatabaseManager:
     async def close(self):
         self.logger.info("MongoDB connection closed.")
 
+    #
+    # ------------- GLOBAL BAN (unchanged) -------------
+    #
+
     async def add_global_ban(self, discord_user_id: int, roblox_user_id: int, reason: str, moderator_discord_id: int):
         doc = {
             "discord_user_id": str(discord_user_id),
@@ -388,6 +409,10 @@ class DatabaseManager:
         doc = await self.db["global_bans"].find_one({"discord_user_id": str(discord_user_id)})
         return doc is not None
 
+    #
+    # ------------- CHANNEL LOCKING (unchanged) -------------
+    #
+
     async def lock_channel_in_db(self, server_id: int, channel_id: int):
         data = await self._get_server_data(server_id)
         cid_str = str(channel_id)
@@ -405,3 +430,60 @@ class DatabaseManager:
     async def is_channel_locked(self, server_id: int, channel_id: int) -> bool:
         data = await self._get_server_data(server_id)
         return str(channel_id) in data["locked_channels"]
+
+    #
+    # ------------- CASES SYSTEM (NEW) -------------
+    #
+
+    def _generate_random_case_id(self, length: int = 6) -> str:
+        """
+        Generate a random uppercase-alphanumeric string, e.g. 'A1B2C3'.
+        """
+        alphabet = string.ascii_uppercase + string.digits
+        return "".join(random.choice(alphabet) for _ in range(length))
+
+    async def add_case(
+        self,
+        server_id: int,
+        user_id: int,
+        moderator_id: int,
+        action_type: str,
+        reason: str,
+        extra: dict = None
+    ) -> str:
+        """
+        Create a new moderation 'case' entry (warn/mute/kick/ban/etc.)
+        using a random short string as the case_id.
+        Returns the new case_id (string).
+        """
+        if extra is None:
+            extra = {}
+        for _ in range(10):  # Up to 10 attempts to find a unique random ID
+            new_case_id = self._generate_random_case_id()
+            doc = {
+                "case_id": new_case_id,
+                "server_id": str(server_id),
+                "user_id": str(user_id),
+                "moderator_id": str(moderator_id),
+                "action_type": action_type,
+                "reason": reason,
+                "timestamp": datetime.utcnow().isoformat(),
+                "extra": extra
+            }
+            try:
+                await self.db["cases"].insert_one(doc)
+                return new_case_id
+            except DuplicateKeyError:
+                # The random ID collided for this server -- try again
+                continue
+        raise RuntimeError("Could not generate a unique case ID after 10 attempts.")
+
+    async def get_case(self, server_id: int, case_id: str) -> dict:
+        """
+        Retrieve a specific case (by server and case_id string).
+        Returns the Mongo document, or None if not found.
+        """
+        return await self.db["cases"].find_one({
+            "server_id": str(server_id),
+            "case_id": case_id
+        })
