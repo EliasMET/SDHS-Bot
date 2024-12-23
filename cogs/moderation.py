@@ -8,13 +8,23 @@ from datetime import datetime, timedelta
 from discord.ext import commands
 from discord import app_commands
 
+#
+# Helper permission checks
+#
 async def is_admin_or_owner(interaction: discord.Interaction) -> bool:
+    """
+    Check if the user is the guild owner or has Administrator permissions.
+    """
     return (
         interaction.user.guild_permissions.administrator
         or interaction.user.id == interaction.guild.owner_id
     )
 
 async def is_moderator(interaction: discord.Interaction) -> bool:
+    """
+    Check if the user is the bot owner, has Administrator permissions,
+    or has one of the allowed moderator roles (from DB).
+    """
     bot = interaction.client
     if not hasattr(bot, 'owner_id'):
         app_info = await bot.application_info()
@@ -24,17 +34,31 @@ async def is_moderator(interaction: discord.Interaction) -> bool:
         return True
     if interaction.user.guild_permissions.administrator:
         return True
+
     allowed_roles = await bot.database.get_moderation_allowed_roles(interaction.guild.id)
     user_roles = [role.id for role in interaction.user.roles]
     if any(role_id in allowed_roles for role_id in user_roles):
         return True
+
     raise app_commands.MissingPermissions(['administrator'])
 
+#
+# Helper function to check if a warning is expired
+#
 def is_warning_expired(timestamp_val: int, days: int = 2) -> bool:
+    """
+    Check if a warning is older than `days` days.
+    """
     warning_time = datetime.utcfromtimestamp(timestamp_val)
     return (datetime.utcnow() - warning_time) > timedelta(days=days)
 
+#
+# Simple pagination for warnings
+#
 class WarningsView(discord.ui.View):
+    """
+    A Discord UI View to paginate through a user's warnings.
+    """
     def __init__(self, warnings, user, per_page=7):
         super().__init__(timeout=180)
         self.warnings = warnings
@@ -47,29 +71,34 @@ class WarningsView(discord.ui.View):
             label="Previous", style=discord.ButtonStyle.blurple, disabled=True
         )
         self.next_button = discord.ui.Button(
-            label="Next",
-            style=discord.ButtonStyle.blurple,
-            disabled=(self.total_pages <= 1),
+            label="Next", style=discord.ButtonStyle.blurple, disabled=(self.total_pages <= 1)
         )
         self.previous_button.callback = self.previous_page
         self.next_button.callback = self.next_page
+
         self.add_item(self.previous_button)
         self.add_item(self.next_button)
 
-    def create_embed(self):
+    def create_embed(self) -> discord.Embed:
+        """
+        Build an embed showing a subset of warnings for the current page.
+        """
         start = self.current_page * self.per_page
         end = start + self.per_page
+
         embed = discord.Embed(
             title=f"Warnings for {self.user}",
             color=0xFF0000,
             description=f"Page {self.current_page + 1}/{self.total_pages}",
             timestamp=datetime.utcnow(),
         )
+
         for warn in self.warnings[start:end]:
             moderator_id = warn[2]
             reason = warn[3]
             timestamp_val = int(warn[4])
             warn_id = warn[5]
+
             embed.add_field(
                 name=f"Warning ID: {warn_id}",
                 value=(
@@ -101,6 +130,16 @@ class WarningsView(discord.ui.View):
 
 
 class Moderation(commands.Cog, name="moderation"):
+    """
+    A Cog for general moderation commands:
+    - Ban
+    - Kick
+    - Timeout
+    - Lock/Unlock channels (single & mass)
+    - Warnings management
+    - Global bans
+    - Case lookup
+    """
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # Create an in-memory lock to synchronize global_ban calls
@@ -111,20 +150,29 @@ class Moderation(commands.Cog, name="moderation"):
         if not self.db:
             self.bot.logger.error("DatabaseManager is not initialized in the bot.")
             raise ValueError("DatabaseManager is not initialized in the bot.")
+
         if not hasattr(self.bot, 'owner_id'):
             app_info = await self.bot.application_info()
             self.bot.owner_id = app_info.owner.id
+
         self.bot.logger.info("Moderation Cog loaded successfully.")
+
+    #
+    # --------------- Ban Commands ---------------
+    #
 
     @app_commands.command(name="ban", description="Ban a member from the server.")
     @app_commands.describe(member="The member to ban.", reason="Reason for banning the member.")
     @app_commands.check(is_moderator)
     async def ban(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
+        """
+        Ban a member from the guild.
+        """
         await interaction.response.defer(ephemeral=True)
         try:
             await member.ban(reason=reason, delete_message_days=0)
 
-            # Random string case ID
+            # Create a case for this ban
             case_id = await self.db.add_case(
                 server_id=interaction.guild.id,
                 user_id=member.id,
@@ -134,12 +182,18 @@ class Moderation(commands.Cog, name="moderation"):
             )
 
             embed = discord.Embed(
-                description=f"✅ Successfully banned {member.mention}.\n**Reason:** {reason}\n**Case ID:** {case_id}",
+                description=(
+                    f"✅ Successfully banned {member.mention}.\n"
+                    f"**Reason:** {reason}\n"
+                    f"**Case ID:** {case_id}"
+                ),
                 color=discord.Color.green()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
+
             self.bot.logger.info(f"{interaction.user} banned {member} for: {reason}")
             await self.log_action(interaction.guild, "Ban", interaction.user, member, reason)
+
         except discord.Forbidden:
             embed = discord.Embed(
                 description="❌ I do not have permission to ban this member.",
@@ -155,13 +209,21 @@ class Moderation(commands.Cog, name="moderation"):
             await interaction.followup.send(embed=embed, ephemeral=True)
             self.bot.logger.error(f"HTTPException while banning {member}: {e}")
 
+    #
+    # --------------- Global Ban Commands ---------------
+    #
+
     @app_commands.command(name="global_ban", description="Globally ban a user.")
     @app_commands.describe(user="The user to globally ban.", reason="Reason for the ban.")
     @app_commands.check(is_admin_or_owner)
     async def global_ban(self, interaction: discord.Interaction, user: discord.User, reason: str = "No reason provided."):
+        """
+        Globally ban a user across all relevant servers (via Bloxlink).
+        """
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild.id
         bloxlink_api_key = os.getenv("BLOXLINK_TOKEN")
+
         if not bloxlink_api_key:
             embed = discord.Embed(
                 description="❌ BLOXLINK_TOKEN not set in environment variables.",
@@ -183,13 +245,17 @@ class Moderation(commands.Cog, name="moderation"):
                                 f"Bloxlink API Error: Status {bloxlink_response.status}, Data: {bloxlink_data}"
                             )
                         roblox_user_id = bloxlink_data["robloxID"]
-                        self.bot.logger.info(f"Fetched Roblox User ID {roblox_user_id} for {user} via Bloxlink.")
+                        self.bot.logger.info(
+                            f"Fetched Roblox User ID {roblox_user_id} for {user} via Bloxlink."
+                        )
 
+                        # Optional: fetch Roblox username
                         roblox_user_url = f"https://users.roblox.com/v1/users/{roblox_user_id}"
                         async with session.get(roblox_user_url) as roblox_user_response:
                             roblox_user_data = await roblox_user_response.json()
                             roblox_username = roblox_user_data.get("name", "Unknown")
 
+                # Actually record the global ban in DB
                 await self.db.add_global_ban(user.id, roblox_user_id, reason, interaction.user.id)
 
             embed = discord.Embed(
@@ -202,6 +268,7 @@ class Moderation(commands.Cog, name="moderation"):
                 color=discord.Color.green()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
+
             self.bot.logger.info(
                 f"{interaction.user} globally banned {user} (Roblox ID: {roblox_user_id}), reason: {reason}"
             )
@@ -218,6 +285,9 @@ class Moderation(commands.Cog, name="moderation"):
     @app_commands.describe(user="The user to remove the global ban from.")
     @app_commands.check(is_admin_or_owner)
     async def global_unban(self, interaction: discord.Interaction, user: discord.User):
+        """
+        Lift a global ban from the specified user.
+        """
         await interaction.response.defer(ephemeral=True)
         try:
             removed = await self.db.remove_global_ban(user.id)
@@ -242,10 +312,20 @@ class Moderation(commands.Cog, name="moderation"):
             await interaction.followup.send(embed=embed, ephemeral=True)
             self.bot.logger.error(f"Exception while removing global ban for {user}: {e}")
 
+    #
+    # --------------- Warnings Commands ---------------
+    #
+
     @app_commands.command(name="warns", description="View warnings for a user.")
-    @app_commands.describe(user="The user to view warnings for.", show_expired="Whether to include expired warnings.")
+    @app_commands.describe(
+        user="The user to view warnings for.",
+        show_expired="Whether to include expired warnings."
+    )
     @app_commands.check(is_moderator)
     async def warns(self, interaction: discord.Interaction, user: discord.Member, show_expired: bool = False):
+        """
+        Display warnings for a given user, optionally excluding expired ones.
+        """
         await interaction.response.defer(ephemeral=True)
         try:
             all_warnings = await self.db.get_warnings(user_id=user.id, server_id=interaction.guild.id)
@@ -263,7 +343,9 @@ class Moderation(commands.Cog, name="moderation"):
             view = WarningsView(all_warnings, user)
             embed = view.create_embed()
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-            self.bot.logger.info(f"{interaction.user} viewed warnings for {user} (show_expired={show_expired}).")
+            self.bot.logger.info(
+                f"{interaction.user} viewed warnings for {user} (show_expired={show_expired})."
+            )
         except Exception as e:
             self.bot.logger.error(f"Failed to retrieve warnings for {user}: {e}")
             embed = discord.Embed(
@@ -272,15 +354,22 @@ class Moderation(commands.Cog, name="moderation"):
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
+    #
+    # --------------- Kick Command ---------------
+    #
+
     @app_commands.command(name="kick", description="Kick a member from the server.")
     @app_commands.describe(member="The member to kick.", reason="Reason for kicking the member.")
     @app_commands.check(is_moderator)
     async def kick(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
+        """
+        Kick a member from the guild.
+        """
         await interaction.response.defer(ephemeral=True)
         try:
             await member.kick(reason=reason)
 
-            # Random string case ID
+            # Create a case for this kick
             case_id = await self.db.add_case(
                 server_id=interaction.guild.id,
                 user_id=member.id,
@@ -290,12 +379,18 @@ class Moderation(commands.Cog, name="moderation"):
             )
 
             embed = discord.Embed(
-                description=f"✅ Successfully kicked {member.mention}.\n**Reason:** {reason}\n**Case ID:** {case_id}",
+                description=(
+                    f"✅ Successfully kicked {member.mention}.\n"
+                    f"**Reason:** {reason}\n"
+                    f"**Case ID:** {case_id}"
+                ),
                 color=discord.Color.green()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
+
             self.bot.logger.info(f"{interaction.user} kicked {member} for {reason}")
             await self.log_action(interaction.guild, "Kick", interaction.user, member, reason)
+
         except discord.Forbidden:
             embed = discord.Embed(
                 description="❌ I do not have permission to kick this member.",
@@ -311,6 +406,10 @@ class Moderation(commands.Cog, name="moderation"):
             await interaction.followup.send(embed=embed, ephemeral=True)
             self.bot.logger.error(f"HTTPException while kicking {member}: {e}")
 
+    #
+    # --------------- Timeout Command ---------------
+    #
+
     @app_commands.command(name="timeout", description="Timeout a member for a specified duration.")
     @app_commands.describe(
         member="The member to timeout.",
@@ -319,22 +418,19 @@ class Moderation(commands.Cog, name="moderation"):
     )
     @app_commands.check(is_moderator)
     async def timeout_member(self, interaction: discord.Interaction, member: discord.Member, duration: str, reason: str = "No reason provided."):
+        """
+        Put a member in timeout for a given duration.
+        """
         await interaction.response.defer(ephemeral=True)
         try:
             seconds = self.parse_duration(duration)
             if not seconds:
                 raise ValueError("Invalid duration format. Please use 10m, 2h, or 1d.")
+
             until = discord.utils.utcnow() + timedelta(seconds=seconds)
             await member.timeout(until, reason=reason)
-            embed = discord.Embed(
-                description=(
-                    f"✅ {member.mention} has been timed out for {duration}.\n"
-                    f"**Reason:** {reason}"
-                ),
-                color=discord.Color.green()
-            )
 
-            # Random string case ID
+            # Create a case for this timeout
             case_id = await self.db.add_case(
                 server_id=interaction.guild.id,
                 user_id=member.id,
@@ -344,10 +440,19 @@ class Moderation(commands.Cog, name="moderation"):
                 extra={"duration": duration}
             )
 
-            embed.add_field(name="Case ID", value=case_id, inline=False)
+            embed = discord.Embed(
+                description=(
+                    f"✅ {member.mention} has been timed out for {duration}.\n"
+                    f"**Reason:** {reason}\n"
+                    f"**Case ID:** {case_id}"
+                ),
+                color=discord.Color.green()
+            )
             await interaction.followup.send(embed=embed, ephemeral=True)
+
             self.bot.logger.info(f"{interaction.user} timed out {member} for {duration}. Reason: {reason}")
             await self.log_action(interaction.guild, "Timeout", interaction.user, member, reason, duration)
+
         except ValueError as ve:
             embed = discord.Embed(
                 description=f"❌ {ve}",
@@ -371,12 +476,17 @@ class Moderation(commands.Cog, name="moderation"):
             self.bot.logger.error(f"HTTPException while timing out {member}: {e}")
 
     def parse_duration(self, duration_str: str) -> int:
+        """
+        Parse a human-readable duration like '10m', '2h', '1d' into seconds.
+        """
         pattern = re.compile(r'^(?P<value>\d+)(?P<unit>[mhd])$')
         match = pattern.match(duration_str.lower())
         if not match:
             return None
+
         value = int(match.group('value'))
         unit = match.group('unit')
+
         if unit == 'm':
             return value * 60
         elif unit == 'h':
@@ -385,22 +495,61 @@ class Moderation(commands.Cog, name="moderation"):
             return value * 86400
         return None
 
+    #
+    # --------------- Lock/Unlock Channel Commands ---------------
+    #
+
     @app_commands.command(name="lock", description="Lock a specific text channel.")
     @app_commands.describe(channel="The channel to lock.", reason="Reason for locking.")
     @app_commands.check(is_moderator)
     async def lock_channel(self, interaction: discord.Interaction, channel: discord.TextChannel = None, reason: str = "No reason provided."):
+        """
+        Lock a channel (deny @everyone Send Messages) if not already locked.
+        """
         await interaction.response.defer(ephemeral=True)
         channel = channel or interaction.channel
+
         try:
             overwrite = channel.overwrites_for(interaction.guild.default_role)
+            if overwrite.send_messages is False:
+                # Already locked
+                embed = discord.Embed(
+                    description=f"❌ {channel.mention} is already locked.",
+                    color=discord.Color.red()
+                )
+                return await interaction.followup.send(embed=embed, ephemeral=True)
+
             overwrite.send_messages = False
             await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
 
+            # Create a case for channel lock
+            case_id = await self.db.add_case(
+                server_id=interaction.guild.id,
+                user_id=interaction.user.id,  # The user performing the lock
+                moderator_id=interaction.user.id,
+                action_type="channel_lock",
+                reason=reason,
+                extra={"channel_id": channel.id, "channel_name": channel.name}
+            )
+
+            # Send an embed in the channel to let users know
+            lock_embed = discord.Embed(title="🔒 Channel Locked", color=discord.Color.red())
+            lock_embed.add_field(name="Locked By", value=interaction.user.mention, inline=True)
+            lock_embed.add_field(name="Case ID", value=case_id, inline=True)
+            lock_embed.add_field(name="Reason", value=reason, inline=False)
+            await channel.send(embed=lock_embed)
+
+            # Send ephemeral confirmation
             embed = discord.Embed(
-                description=f"✅ {channel.mention} locked.\n**Reason:** {reason}",
+                description=(
+                    f"✅ {channel.mention} locked.\n"
+                    f"**Reason:** {reason}\n"
+                    f"**Case ID:** {case_id}"
+                ),
                 color=discord.Color.green()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
+
             self.bot.logger.info(f"{interaction.user} locked {channel} for {reason}")
             await self.log_channel_action(interaction.guild, "Channel Lock", interaction.user, channel, reason)
 
@@ -423,18 +572,53 @@ class Moderation(commands.Cog, name="moderation"):
     @app_commands.describe(channel="The channel to unlock.", reason="Reason for unlocking.")
     @app_commands.check(is_moderator)
     async def unlock_channel(self, interaction: discord.Interaction, channel: discord.TextChannel = None, reason: str = "No reason provided."):
+        """
+        Unlock a channel (allow @everyone Send Messages) if not already unlocked.
+        """
         await interaction.response.defer(ephemeral=True)
         channel = channel or interaction.channel
+
         try:
             overwrite = channel.overwrites_for(interaction.guild.default_role)
+            if overwrite.send_messages is True or overwrite.send_messages is None:
+                # Already unlocked
+                embed = discord.Embed(
+                    description=f"❌ {channel.mention} is already unlocked.",
+                    color=discord.Color.red()
+                )
+                return await interaction.followup.send(embed=embed, ephemeral=True)
+
             overwrite.send_messages = True
             await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
 
+            # Create a case for channel unlock
+            case_id = await self.db.add_case(
+                server_id=interaction.guild.id,
+                user_id=interaction.user.id,
+                moderator_id=interaction.user.id,
+                action_type="channel_unlock",
+                reason=reason,
+                extra={"channel_id": channel.id, "channel_name": channel.name}
+            )
+
+            # Send an embed in the channel to let users know
+            unlock_embed = discord.Embed(title="🔓 Channel Unlocked", color=discord.Color.green())
+            unlock_embed.add_field(name="Unlocked By", value=interaction.user.mention, inline=True)
+            unlock_embed.add_field(name="Case ID", value=case_id, inline=True)
+            unlock_embed.add_field(name="Reason", value=reason, inline=False)
+            await channel.send(embed=unlock_embed)
+
+            # Send ephemeral confirmation
             embed = discord.Embed(
-                description=f"✅ {channel.mention} unlocked.\n**Reason:** {reason}",
+                description=(
+                    f"✅ {channel.mention} unlocked.\n"
+                    f"**Reason:** {reason}\n"
+                    f"**Case ID:** {case_id}"
+                ),
                 color=discord.Color.green()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
+
             self.bot.logger.info(f"{interaction.user} unlocked {channel}. Reason: {reason}")
             await self.log_channel_action(interaction.guild, "Channel Unlock", interaction.user, channel, reason)
 
@@ -457,21 +641,54 @@ class Moderation(commands.Cog, name="moderation"):
     @app_commands.describe(reason="Reason for locking all channels.")
     @app_commands.check(is_moderator)
     async def lock_all_channels(self, interaction: discord.Interaction, reason: str = "No reason provided."):
+        """
+        Lock all text channels in the guild (deny @everyone Send Messages),
+        skipping channels already locked, and creating a single case for the operation.
+        """
         await interaction.response.defer(ephemeral=True)
         try:
-            count = 0
+            # Create one "mass lock" case for the entire operation
+            case_id = await self.db.add_case(
+                server_id=interaction.guild.id,
+                user_id=interaction.user.id,
+                moderator_id=interaction.user.id,
+                action_type="mass_channel_lock",
+                reason=reason,
+                extra={}
+            )
+
+            newly_locked = []
             for channel in interaction.guild.text_channels:
                 overwrite = channel.overwrites_for(interaction.guild.default_role)
+
+                # Skip if already locked
+                if overwrite.send_messages is False:
+                    continue
+
                 overwrite.send_messages = False
                 await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
-                count += 1
+                newly_locked.append(channel)
+
+                # Send a lock embed in each newly locked channel
+                lock_embed = discord.Embed(title="🔒 Channel Locked", color=discord.Color.red())
+                lock_embed.add_field(name="Locked By", value=interaction.user.mention, inline=True)
+                lock_embed.add_field(name="Case ID", value=case_id, inline=True)
+                lock_embed.add_field(name="Reason", value=reason, inline=False)
+                await channel.send(embed=lock_embed)
 
             embed = discord.Embed(
-                description=f"✅ Locked {count} channels.\n**Reason:** {reason}",
-                color=discord.Color.green()
+                title="Mass Lock Complete",
+                color=discord.Color.green(),
+                description=(
+                    f"Locked {len(newly_locked)} channels.\n"
+                    f"**Reason:** {reason}\n"
+                    f"**Case ID:** {case_id}"
+                ),
+                timestamp=datetime.utcnow()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
-            self.bot.logger.info(f"{interaction.user} locked all channels. Reason: {reason}")
+
+            self.bot.logger.info(f"{interaction.user} locked {len(newly_locked)} channels. Reason: {reason}")
 
         except Exception as e:
             embed = discord.Embed(
@@ -485,21 +702,55 @@ class Moderation(commands.Cog, name="moderation"):
     @app_commands.describe(reason="Reason for unlocking all channels.")
     @app_commands.check(is_moderator)
     async def unlock_all_channels(self, interaction: discord.Interaction, reason: str = "No reason provided."):
+        """
+        Unlock all text channels in the guild (allow @everyone Send Messages),
+        skipping channels already unlocked, and creating a single case for the operation.
+        """
         await interaction.response.defer(ephemeral=True)
         try:
-            count = 0
+            # Create one "mass unlock" case for the entire operation
+            case_id = await self.db.add_case(
+                server_id=interaction.guild.id,
+                user_id=interaction.user.id,
+                moderator_id=interaction.user.id,
+                action_type="mass_channel_unlock",
+                reason=reason,
+                extra={}
+            )
+
+            newly_unlocked = []
             for channel in interaction.guild.text_channels:
                 overwrite = channel.overwrites_for(interaction.guild.default_role)
+
+                # If it's None or True, consider it "unlocked" already
+                if overwrite.send_messages is True or overwrite.send_messages is None:
+                    continue
+
                 overwrite.send_messages = True
                 await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
-                count += 1
+                newly_unlocked.append(channel)
+
+                # Send an unlock embed in each newly unlocked channel
+                unlock_embed = discord.Embed(title="🔓 Channel Unlocked", color=discord.Color.green())
+                unlock_embed.add_field(name="Unlocked By", value=interaction.user.mention, inline=True)
+                unlock_embed.add_field(name="Case ID", value=case_id, inline=True)
+                unlock_embed.add_field(name="Reason", value=reason, inline=False)
+                await channel.send(embed=unlock_embed)
 
             embed = discord.Embed(
-                description=f"✅ Unlocked {count} channels.\n**Reason:** {reason}",
-                color=discord.Color.green()
+                title="Mass Unlock Complete",
+                color=discord.Color.green(),
+                description=(
+                    f"Unlocked {len(newly_unlocked)} channels.\n"
+                    f"**Reason:** {reason}\n"
+                    f"**Case ID:** {case_id}"
+                ),
+                timestamp=datetime.utcnow()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
-            self.bot.logger.info(f"{interaction.user} unlocked all channels. Reason: {reason}")
+
+            self.bot.logger.info(f"{interaction.user} unlocked {len(newly_unlocked)} channels. Reason: {reason}")
+
         except Exception as e:
             embed = discord.Embed(
                 description=f"❌ Failed to unlock all channels: {e}",
@@ -507,6 +758,10 @@ class Moderation(commands.Cog, name="moderation"):
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
             self.bot.logger.error(f"Exception while unlocking all channels: {e}")
+
+    #
+    # --------------- Logging & Case Lookup ---------------
+    #
 
     async def log_action(
         self,
@@ -517,6 +772,9 @@ class Moderation(commands.Cog, name="moderation"):
         reason: str,
         duration: str = None
     ):
+        """
+        Send an embedded log message to the mod log channel (if set) for user-based actions.
+        """
         try:
             log_channel_id = await self.db.get_mod_log_channel(guild.id)
             if not log_channel_id:
@@ -531,15 +789,12 @@ class Moderation(commands.Cog, name="moderation"):
                 timestamp=discord.utils.utcnow()
             )
             embed.add_field(name="Executor", value=f"{executor} (ID: {executor.id})", inline=True)
-            embed.add_field(
-                name="Target",
-                value=f"{target} (ID: {target.id})" if target else "N/A",
-                inline=True
-            )
+            embed.add_field(name="Target", value=f"{target} (ID: {target.id})" if target else "N/A", inline=True)
             embed.add_field(name="Reason", value=reason, inline=False)
             if duration:
                 embed.add_field(name="Duration", value=duration, inline=True)
             embed.set_footer(text=f"Guild: {guild.name} (ID: {guild.id})")
+
             await log_channel.send(embed=embed)
         except Exception as e:
             self.bot.logger.error(f"Failed to log moderation action: {e}")
@@ -552,6 +807,9 @@ class Moderation(commands.Cog, name="moderation"):
         channel: discord.TextChannel,
         reason: str
     ):
+        """
+        Send an embedded log message to the mod log channel for channel-based actions (lock/unlock).
+        """
         try:
             log_channel_id = await self.db.get_mod_log_channel(guild.id)
             if not log_channel_id:
@@ -566,22 +824,21 @@ class Moderation(commands.Cog, name="moderation"):
                 timestamp=discord.utils.utcnow()
             )
             embed.add_field(name="Executor", value=f"{executor} (ID: {executor.id})", inline=True)
-            embed.add_field(
-                name="Channel",
-                value=f"{channel.mention} (ID: {channel.id})" if channel else "N/A",
-                inline=True
-            )
+            embed.add_field(name="Channel", value=f"{channel.mention} (ID: {channel.id})", inline=True)
             embed.add_field(name="Reason", value=reason, inline=False)
             embed.set_footer(text=f"Guild: {guild.name} (ID: {guild.id})")
+
             await log_channel.send(embed=embed)
         except Exception as e:
             self.bot.logger.error(f"Failed to log channel moderation action: {e}")
 
-    # CHANGED to accept case_id as a string
     @app_commands.command(name="case", description="Look up data about a specific case.")
     @app_commands.describe(case_id="The ID of the case to look up (e.g. ABC123).")
     @app_commands.check(is_moderator)
     async def case_lookup(self, interaction: discord.Interaction, case_id: str):
+        """
+        Look up a specific moderation case by its random string ID.
+        """
         await interaction.response.defer(ephemeral=True)
         try:
             doc = await self.db.get_case(interaction.guild.id, case_id)
@@ -613,6 +870,7 @@ class Moderation(commands.Cog, name="moderation"):
             unix_ts = int(dt_obj.timestamp())
             embed.add_field(name="Created At", value=f"<t:{unix_ts}:F>", inline=False)
 
+            # If there is any extra info, display it
             for k, v in extra.items():
                 embed.add_field(name=k.capitalize(), value=str(v), inline=False)
 
@@ -627,14 +885,22 @@ class Moderation(commands.Cog, name="moderation"):
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
+    #
+    # --------------- Error Handling ---------------
+    #
+
     @commands.Cog.listener()
     async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        """
+        A common error handler for all app command errors in this Cog.
+        """
         embed = discord.Embed(
             title="❌ Error",
             description="An error occurred while processing the command.",
             color=discord.Color.red(),
             timestamp=datetime.utcnow()
         )
+
         if isinstance(error, app_commands.MissingPermissions):
             embed.description = "You do not have the required permissions to use this command."
         elif isinstance(error, app_commands.CommandInvokeError):
@@ -649,6 +915,9 @@ class Moderation(commands.Cog, name="moderation"):
         else:
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
+#
+# Register the Cog
+#
 async def setup(bot: commands.Bot):
     await bot.add_cog(Moderation(bot))
     bot.logger.info("Moderation Cog has been added to the bot.")
