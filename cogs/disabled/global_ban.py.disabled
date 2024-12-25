@@ -1,0 +1,362 @@
+import os
+import re
+import math
+import asyncio
+import discord
+from datetime import datetime, timedelta
+from discord.ext import commands
+from discord import app_commands
+
+##########################
+#  Set this to True/False
+##########################
+DEBUG_MODE = False
+##########################
+
+def parse_duration(duration_str: str) -> int:
+    """
+    Parse a duration string like '10m', '2h', '1d' into total seconds.
+    Return None if invalid.
+    """
+    pattern = re.compile(r'^(\d+)([mhd])$', re.IGNORECASE)
+    match = pattern.match(duration_str)
+    if not match:
+        return None
+    val = int(match.group(1))
+    unit = match.group(2).lower()
+    if unit == 'm':
+        return val * 60
+    elif unit == 'h':
+        return val * 3600
+    elif unit == 'd':
+        return val * 86400
+    return None
+
+async def is_admin_or_owner(interaction: discord.Interaction) -> bool:
+    """
+    Only guild admins or the guild owner can use these commands.
+    """
+    return (
+        interaction.user.guild_permissions.administrator
+        or interaction.user.id == interaction.guild.owner_id
+    )
+
+class GlobalBanCog(commands.Cog, name="GlobalBan"):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.global_ban_lock = asyncio.Lock()
+
+    async def cog_load(self):
+        self.db = self.bot.database
+        if not self.db:
+            self.bot.logger.error("DatabaseManager is not initialized in the bot.")
+            raise ValueError("DatabaseManager is not initialized.")
+        if not hasattr(self.bot, 'owner_id'):
+            app_info = await self.bot.application_info()
+            self.bot.owner_id = app_info.owner.id
+        self.bot.logger.info("GlobalBan Cog loaded successfully.")
+
+    @app_commands.command(name="global_ban", description="Globally ban a user. Optional duration like 10m, 2h, 1d.")
+    @app_commands.describe(
+        user="The user to globally ban.",
+        reason="Reason for banning.",
+        duration="Optional: 10m, 2h, 1d, etc."
+    )
+    @app_commands.check(is_admin_or_owner)
+    async def global_ban(
+        self,
+        interaction: discord.Interaction,
+        user: discord.User,
+        reason: str,
+        duration: str = None
+    ):
+        """
+        Globally ban a user from all servers (hack-ban style).
+        If DEBUG_MODE=True, we only simulate the ban.
+        """
+        await interaction.response.defer(ephemeral=True)
+
+        guild_id = interaction.guild.id
+        bloxlink_api_key = os.getenv("BLOXLINK_TOKEN")
+        if not bloxlink_api_key:
+            return await interaction.followup.send(
+                embed=discord.Embed(
+                    description="❌ BLOXLINK_TOKEN not set in environment.",
+                    color=discord.Color.red()
+                ),
+                ephemeral=True
+            )
+
+        # Parse optional duration
+        expires_at = None
+        if duration:
+            seconds = parse_duration(duration)
+            if not seconds:
+                em = discord.Embed(
+                    description="❌ Invalid duration. Use something like `10m`, `2h`, or `1d`.",
+                    color=discord.Color.red()
+                )
+                return await interaction.followup.send(embed=em, ephemeral=True)
+            expires_at = datetime.utcnow() + timedelta(seconds=seconds)
+
+        # Attempt to get Roblox user info from Bloxlink
+        roblox_user_id = None
+        roblox_username = "Unknown"
+
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                bloxlink_url = f"https://api.blox.link/v4/public/guilds/{guild_id}/discord-to-roblox/{user.id}"
+                headers = {"Authorization": bloxlink_api_key}
+                async with session.get(bloxlink_url, headers=headers) as resp:
+                    data = await resp.json()
+                    # "robloxID" might be absent if not found/linked
+                    if resp.status == 200 and "robloxID" in data:
+                        # Convert to str to store consistently
+                        roblox_user_id = str(data["robloxID"])
+                        # fetch more info from Roblox
+                        roblox_user_api = f"https://users.roblox.com/v1/users/{roblox_user_id}"
+                        async with session.get(roblox_user_api) as r2:
+                            r2_json = await r2.json()
+                            roblox_username = r2_json.get("name", "Unknown")
+                    else:
+                        self.bot.logger.warning(f"Bloxlink error or no RobloxID: {resp.status}, {data}")
+        except Exception as e:
+            self.bot.logger.warning(f"Bloxlink lookup failed: {e}")
+
+        try:
+            async with self.global_ban_lock:
+                # 1) DM embed to user if not debug
+                dm_embed = discord.Embed(
+                    title="🚫 Ultra Ban Notice",
+                    description=(
+                        f"You have been **ultra banned** from all Homeland Security related servers.\n\n"
+                        f"**Reason:** {reason}\n"
+                        f"**Contact** an administrator if you believe this is in error."
+                    ),
+                    color=discord.Color.red(),
+                    timestamp=datetime.utcnow()
+                )
+                dm_embed.set_footer(text="Homeland Security", icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None)
+
+                if not DEBUG_MODE:
+                    try:
+                        await user.send(embed=dm_embed)
+                        self.bot.logger.info(f"DM to user {user.id} succeeded.")
+                    except (discord.Forbidden, discord.HTTPException) as e:
+                        self.bot.logger.warning(f"Failed to DM user {user.id}: {e}")
+                else:
+                    self.bot.logger.info(f"[DEBUG] Would have DM'd user {user.id} with an embed: {dm_embed.description}")
+
+                # 2) Add global ban record to DB (or simulate)
+                if not DEBUG_MODE:
+                    await self.db.add_global_ban(
+                        discord_user_id=user.id,
+                        roblox_user_id=roblox_user_id,
+                        reason=reason,
+                        moderator_discord_id=interaction.user.id,
+                        expires_at=expires_at
+                    )
+                else:
+                    self.bot.logger.info(f"[DEBUG] Would have added global ban doc for {user.id} to DB.")
+
+                # 3) Add a "case" document
+                extra_data = {
+                    "roblox_id": roblox_user_id,
+                    "roblox_username": roblox_username,
+                    "duration": duration or "indefinite"
+                }
+                if not DEBUG_MODE:
+                    case_id = await self.db.add_case(
+                        interaction.guild.id,
+                        user.id,
+                        interaction.user.id,
+                        "global_ban",
+                        reason,
+                        extra=extra_data
+                    )
+                else:
+                    case_id = "DEBUG123"
+                    self.bot.logger.info(f"[DEBUG] Would have created a case for user {user.id} with reason='{reason}'.")
+
+                # 4) Hack-ban user from all servers
+                ban_details = []  # each = (guild_name, was_in_guild, success_bool)
+                for g in self.bot.guilds:
+                    if g.me.guild_permissions.ban_members:
+                        was_in_guild = g.get_member(user.id) is not None
+                        if not DEBUG_MODE:
+                            try:
+                                await g.ban(discord.Object(id=user.id), reason=f"[Global Ban] {reason}")
+                                ban_details.append((g.name, was_in_guild, True))
+                            except (discord.Forbidden, discord.HTTPException):
+                                ban_details.append((g.name, was_in_guild, False))
+                        else:
+                            ban_details.append((g.name, was_in_guild, True))
+                            self.bot.logger.info(f"[DEBUG] Would have hack-banned {user.id} from {g.id}")
+
+            # Summarize success/fail
+            success_guilds = []
+            failed_guilds = []
+            for guild_name, was_in, success in ban_details:
+                if success:
+                    success_guilds.append(f"✅ **{guild_name}** (in guild: {was_in})")
+                else:
+                    failed_guilds.append(f"❌ **{guild_name}** (in guild: {was_in})")
+
+            succ_text = "\n".join(success_guilds) if success_guilds else "None"
+            fail_text = "\n".join(failed_guilds) if failed_guilds else "None"
+
+            desc = (
+                f"🔨 **Global Ban:** {user.mention}\n\n"
+                f"**📝 Reason:** {reason}\n"
+                f"**🤖 Roblox:** {roblox_username} (ID: {roblox_user_id or 'N/A'})\n"
+                f"**⏱ Duration:** {duration or 'indefinite'}\n\n"
+                f"**Servers Banned:**\n{succ_text}\n\n"
+                f"**Servers Failed:**\n{fail_text}\n\n"
+                f"**Case ID:** `{case_id}`\n"
+                f"**Debug Mode:** {DEBUG_MODE}"
+            )
+            embed = discord.Embed(description=desc, color=discord.Color.green(), timestamp=datetime.utcnow())
+            embed.set_author(name="Global Ban Complete")
+            embed.set_footer(text=f"Requested by {interaction.user}", icon_url=interaction.user.avatar.url if interaction.user.avatar else None)
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        except Exception as ex:
+            em = discord.Embed(
+                description=f"❌ Failed to globally ban user: {ex}",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=em, ephemeral=True)
+
+    @app_commands.command(name="global_unban", description="Remove a global ban for a user (hack-unban).")
+    @app_commands.describe(user="The user to unban globally.")
+    @app_commands.check(is_admin_or_owner)
+    async def global_unban(self, interaction: discord.Interaction, user: discord.User):
+        """
+        Removes a user's global ban from DB, then unbans them (hack-unban) from every server.
+        """
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            if not DEBUG_MODE:
+                removed = await self.db.remove_global_ban(user.id)
+            else:
+                removed = True
+                self.bot.logger.info(f"[DEBUG] Would have removed global ban for user {user.id}.")
+
+            if removed:
+                unban_details = []
+                for g in self.bot.guilds:
+                    if g.me.guild_permissions.ban_members:
+                        if not DEBUG_MODE:
+                            try:
+                                await g.unban(discord.Object(id=user.id), reason="[Global Unban]")
+                                unban_details.append((g.name, True))
+                            except (discord.Forbidden, discord.HTTPException):
+                                unban_details.append((g.name, False))
+                        else:
+                            unban_details.append((g.name, True))
+                            self.bot.logger.info(f"[DEBUG] Would have hack-unbanned {user.id} in {g.id}")
+
+                success_guilds = [f"✅ **{n}**" for (n, ok) in unban_details if ok]
+                failed_guilds = [f"❌ **{n}**" for (n, ok) in unban_details if not ok]
+
+                succ_text = "\n".join(success_guilds) if success_guilds else "None"
+                fail_text = "\n".join(failed_guilds) if failed_guilds else "None"
+
+                desc = (
+                    f"**Global Unban:** {user.mention}\n\n"
+                    f"**Servers Unbanned:**\n{succ_text}\n\n"
+                    f"**Servers Failed:**\n{fail_text}\n\n"
+                    f"**Debug Mode:** {DEBUG_MODE}"
+                )
+                embed = discord.Embed(description=desc, color=discord.Color.green(), timestamp=datetime.utcnow())
+                embed.set_author(name="Global Unban Complete")
+                embed.set_footer(text=f"Requested by {interaction.user}", icon_url=interaction.user.avatar.url if interaction.user.avatar else None)
+
+            else:
+                embed = discord.Embed(
+                    description="❌ No active global ban found for this user.",
+                    color=discord.Color.red()
+                )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        except Exception as ex:
+            em = discord.Embed(
+                description=f"❌ Failed to unban globally: {ex}",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=em, ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        """
+        If a user is globally banned (and not expired), automatically hack-ban them upon joining.
+        """
+        if member.bot:
+            return
+        try:
+            if not DEBUG_MODE:
+                doc = await self.db.get_global_ban(member.id)
+            else:
+                doc = {"reason": "Debug: Simulated global ban", "expires_at": None, "active": True}
+                self.bot.logger.info(
+                    f"[DEBUG] on_member_join: Emulating global ban lookup for user {member.id}."
+                )
+
+            if not doc:
+                return  # not globally banned
+
+            # Check expiration
+            expires_at_str = doc.get("expires_at")
+            if expires_at_str:
+                expires_dt = datetime.fromisoformat(expires_at_str)
+                if datetime.utcnow() > expires_dt:
+                    if not DEBUG_MODE:
+                        await self.db.remove_global_ban(member.id)
+                    else:
+                        self.bot.logger.info(
+                            f"[DEBUG] on_member_join: Would have removed expired ban for {member.id}."
+                        )
+                    return
+
+            ban_reason = doc.get("reason", "Global ban (no reason)")
+            if member.guild.me.guild_permissions.ban_members:
+                if not DEBUG_MODE:
+                    await member.guild.ban(
+                        discord.Object(id=member.id),
+                        reason=f"[Global Ban Auto] {ban_reason}"
+                    )
+
+                    # Attempt to DM with an embed
+                    dm_embed = discord.Embed(
+                        title="🚫 Ultra Ban Notice",
+                        description=(
+                            f"You have been **ultra banned** from all Homeland Security related servers.\n\n"
+                            f"**Reason:** {ban_reason}\n"
+                            f"Contact an administrator if you believe this is in error."
+                        ),
+                        color=discord.Color.red(),
+                        timestamp=datetime.utcnow()
+                    )
+                    dm_embed.set_footer(
+                        text=f"Server: {member.guild.name}",
+                        icon_url=member.guild.icon.url if member.guild.icon else None
+                    )
+                    try:
+                        await member.send(embed=dm_embed)
+                    except (discord.Forbidden, discord.HTTPException) as e:
+                        self.bot.logger.warning(f"Could not DM user {member.id} after auto-ban: {e}")
+                else:
+                    self.bot.logger.info(
+                        f"[DEBUG] on_member_join: Would have hack-banned user {member.id} from {member.guild.id}."
+                    )
+
+        except Exception as e:
+            self.bot.logger.warning(f"GlobalBanCog: Could not auto-ban user {member.id}: {e}")
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(GlobalBanCog(bot))
+    bot.logger.info("GlobalBan Cog added.")

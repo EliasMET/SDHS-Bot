@@ -1,9 +1,9 @@
 import logging
-import random  # NEW
-import string  # NEW
+import random
+import string
 from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from pymongo.errors import DuplicateKeyError  # NEW
+from pymongo.errors import DuplicateKeyError
 
 class DatabaseManager:
     def __init__(self, *, db: AsyncIOMotorDatabase) -> None:
@@ -23,12 +23,14 @@ class DatabaseManager:
         self.logger.info("Database initialized.")
 
     #
-    # ------------- WARN SYSTEM (unchanged) -------------
+    # ------------- WARN SYSTEM -------------
     #
-
     async def add_warn(self, user_id: int, server_id: int, moderator_id: int, reason: str) -> int:
-        last_warn = await self.db["warns"].find({"user_id": str(user_id), "server_id": str(server_id)}) \
-            .sort("id", -1).limit(1).to_list(1)
+        last_warn = await self.db["warns"].find({
+            "user_id": str(user_id),
+            "server_id": str(server_id)
+        }).sort("id", -1).limit(1).to_list(1)
+
         warn_id = (last_warn[0]["id"] if last_warn else 0) + 1
         doc = {
             "id": warn_id,
@@ -42,7 +44,11 @@ class DatabaseManager:
         return warn_id
 
     async def remove_warn(self, warn_id: int, user_id: int, server_id: int) -> bool:
-        result = await self.db["warns"].delete_one({"id": warn_id, "user_id": str(user_id), "server_id": str(server_id)})
+        result = await self.db["warns"].delete_one({
+            "id": warn_id,
+            "user_id": str(user_id),
+            "server_id": str(server_id)
+        })
         return result.deleted_count > 0
 
     async def get_all_warnings(self) -> list:
@@ -55,7 +61,10 @@ class DatabaseManager:
         ]
 
     async def get_warnings(self, user_id: int, server_id: int) -> list:
-        warnings = await self.db["warns"].find({"user_id": str(user_id), "server_id": str(server_id)}).to_list(None)
+        warnings = await self.db["warns"].find({
+            "user_id": str(user_id),
+            "server_id": str(server_id)
+        }).to_list(None)
         for w in warnings:
             w["created_at"] = str(int(datetime.fromisoformat(w["created_at"]).timestamp()))
         return [
@@ -64,11 +73,17 @@ class DatabaseManager:
         ]
 
     async def clear_all_warnings(self, user_id: int, server_id: int) -> int:
-        result = await self.db["warns"].delete_many({"user_id": str(user_id), "server_id": str(server_id)})
+        result = await self.db["warns"].delete_many({
+            "user_id": str(user_id),
+            "server_id": str(server_id)
+        })
         return result.deleted_count
 
     async def count_warnings(self, user_id: int, server_id: int) -> int:
-        return await self.db["warns"].count_documents({"user_id": str(user_id), "server_id": str(server_id)})
+        return await self.db["warns"].count_documents({
+            "user_id": str(user_id),
+            "server_id": str(server_id)
+        })
 
     async def remove_expired_warnings(self, expiration_timestamp: int) -> int:
         all_warnings = await self.db["warns"].find({}).to_list(None)
@@ -84,12 +99,12 @@ class DatabaseManager:
         return removed
 
     #
-    # ------------- SERVER DATA (unchanged) -------------
+    # ------------- SERVER DATA -------------
     #
-
     async def _get_server_data(self, server_id: int) -> dict:
         data = await self.db["server_data"].find_one({"server_id": str(server_id)})
         if not data:
+            # Initialize defaults
             data = {
                 "server_id": str(server_id),
                 "settings": {
@@ -114,6 +129,7 @@ class DatabaseManager:
             }
             await self.db["server_data"].insert_one(data)
         else:
+            # Ensure any newly introduced fields exist
             changed = False
             if "automod_spam_limit" not in data["settings"]:
                 data["settings"]["automod_spam_limit"] = 5
@@ -132,7 +148,6 @@ class DatabaseManager:
                 changed = True
             if changed:
                 await self._update_server_data(server_id, data)
-
         return data
 
     async def _update_server_data(self, server_id: int, update: dict):
@@ -384,35 +399,59 @@ class DatabaseManager:
         data["autopromotion_channel_id"] = str(channel_id)
         await self._update_server_data(server_id, {"autopromotion_channel_id": data["autopromotion_channel_id"]})
 
-    async def close(self):
-        self.logger.info("MongoDB connection closed.")
-
     #
-    # ------------- GLOBAL BAN (unchanged) -------------
+    # ------------- GLOBAL BAN (UPDATED) -------------
     #
-
-    async def add_global_ban(self, discord_user_id: int, roblox_user_id: int, reason: str, moderator_discord_id: int):
+    async def add_global_ban(
+        self,
+        discord_user_id: int,
+        roblox_user_id: int,           # <-- ADDED THIS
+        reason: str,
+        moderator_discord_id: int,
+        expires_at: datetime = None
+    ) -> str:
+        """
+        Add a new global ban record, including a roblox_user_id from Bloxlink if available.
+        Optionally store `expires_at` for temporary global bans.
+        Return the inserted document's ID (string).
+        """
         doc = {
             "discord_user_id": str(discord_user_id),
-            "roblox_user_id": roblox_user_id,
+            "roblox_user_id": str(roblox_user_id) if roblox_user_id else None,
             "reason": reason,
             "banned_at": datetime.utcnow().isoformat(),
-            "moderator_discord_id": str(moderator_discord_id)
+            "moderator_discord_id": str(moderator_discord_id),
+            "active": True,
+            "expires_at": expires_at.isoformat() if expires_at else None
         }
-        await self.db["global_bans"].insert_one(doc)
+        result = await self.db["global_bans"].insert_one(doc)
+        return str(result.inserted_id)
 
     async def remove_global_ban(self, discord_user_id: int) -> bool:
-        result = await self.db["global_bans"].delete_one({"discord_user_id": str(discord_user_id)})
+        """
+        Remove the global ban for a user (by deleting or marking inactive).
+        This version fully deletes the record from the DB.
+        """
+        result = await self.db["global_bans"].delete_one({
+            "discord_user_id": str(discord_user_id),
+            "active": True
+        })
         return result.deleted_count > 0
 
-    async def is_user_globally_banned(self, discord_user_id: int) -> bool:
-        doc = await self.db["global_bans"].find_one({"discord_user_id": str(discord_user_id)})
-        return doc is not None
+    async def get_global_ban(self, discord_user_id: int) -> dict:
+        """
+        Return the ban document if found and still active.
+        Callers can also check the expires_at field for expiration.
+        """
+        doc = await self.db["global_bans"].find_one({
+            "discord_user_id": str(discord_user_id),
+            "active": True
+        })
+        return doc
 
     #
-    # ------------- CHANNEL LOCKING (unchanged) -------------
+    # ------------- CHANNEL LOCKING -------------
     #
-
     async def lock_channel_in_db(self, server_id: int, channel_id: int):
         data = await self._get_server_data(server_id)
         cid_str = str(channel_id)
@@ -432,9 +471,8 @@ class DatabaseManager:
         return str(channel_id) in data["locked_channels"]
 
     #
-    # ------------- CASES SYSTEM (NEW) -------------
+    # ------------- CASES SYSTEM -------------
     #
-
     def _generate_random_case_id(self, length: int = 6) -> str:
         """
         Generate a random uppercase-alphanumeric string, e.g. 'A1B2C3'.
@@ -458,7 +496,7 @@ class DatabaseManager:
         """
         if extra is None:
             extra = {}
-        for _ in range(10):  # Up to 10 attempts to find a unique random ID
+        for _ in range(10):
             new_case_id = self._generate_random_case_id()
             doc = {
                 "case_id": new_case_id,
@@ -487,3 +525,9 @@ class DatabaseManager:
             "server_id": str(server_id),
             "case_id": case_id
         })
+
+    #
+    # ------------- CLOSE CONNECTION -------------
+    #
+    async def close(self):
+        self.logger.info("MongoDB connection closed.")
