@@ -3,7 +3,7 @@ import re
 import math
 import asyncio
 import discord
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Union, Optional
 from discord.ext import commands
 from discord import app_commands
@@ -254,7 +254,7 @@ class Moderation(commands.Cog, name="moderation"):
             embed = discord.Embed(
                 title=action,
                 color=discord.Color.gold(),
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
             embed.add_field(name="Executor", value=f"{executor} (ID: {executor.id})", inline=True)
             if target:
@@ -689,17 +689,49 @@ class Moderation(commands.Cog, name="moderation"):
     async def kick(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
         await interaction.response.defer(ephemeral=True)
         try:
-            await member.kick(reason=reason)
+            # Log the command attempt
+            self.logger.info(
+                f"Kick command used | "
+                f"Executor: {interaction.user} ({interaction.user.id}) | "
+                f"Target: {member} ({member.id}) | "
+                f"Guild: {interaction.guild.name} ({interaction.guild.id})"
+            )
+
             case_id = await self.db.add_case(
                 interaction.guild.id, member.id, interaction.user.id, "kick", reason
             )
+
+            # Send DM before kicking
+            dm_sent = await self.send_moderation_dm(
+                member,
+                "Kick",
+                interaction.guild,
+                reason,
+                case_id=case_id
+            )
+
+            # Perform the kick
+            await member.kick(reason=reason)
+
+            # Create response embed
             e = discord.Embed(
-                description=f"👢 **Kicked** {member.mention}\n**⚠️ Reason:** {reason}\n**🆔 Case:** `{case_id}`",
+                description=(
+                    f"👢 **Kicked** {member.mention}\n"
+                    f"**⚠️ Reason:** {reason}\n"
+                    f"**🆔 Case:** `{case_id}`"
+                ),
                 color=discord.Color.green()
             )
+            if not dm_sent:
+                e.add_field(
+                    name="Note",
+                    value="⚠️ Could not send DM to user",
+                    inline=False
+                )
+
             await interaction.followup.send(embed=e, ephemeral=True)
 
-            # Log
+            # Log the action
             await self.log_moderation_action(
                 interaction.guild,
                 "Kick",
@@ -708,10 +740,32 @@ class Moderation(commands.Cog, name="moderation"):
                 reason
             )
 
+            # Log successful command execution
+            self.logger.info(
+                f"Kick successful | "
+                f"Case: {case_id} | "
+                f"Executor: {interaction.user} ({interaction.user.id}) | "
+                f"Target: {member} ({member.id}) | "
+                f"Guild: {interaction.guild.name} ({interaction.guild.id})"
+            )
+
         except discord.Forbidden:
+            self.logger.error(
+                f"Kick failed (Forbidden) | "
+                f"Executor: {interaction.user} ({interaction.user.id}) | "
+                f"Target: {member} ({member.id}) | "
+                f"Guild: {interaction.guild.name} ({interaction.guild.id})"
+            )
             e = discord.Embed(description="❌ Missing permission to kick.", color=discord.Color.red())
             await interaction.followup.send(embed=e, ephemeral=True)
         except discord.HTTPException as ex:
+            self.logger.error(
+                f"Kick failed (HTTP Error) | "
+                f"Executor: {interaction.user} ({interaction.user.id}) | "
+                f"Target: {member} ({member.id}) | "
+                f"Guild: {interaction.guild.name} ({interaction.guild.id}) | "
+                f"Error: {ex}"
+            )
             e = discord.Embed(description=f"❌ Kick failed: {ex}", color=discord.Color.red())
             await interaction.followup.send(embed=e, ephemeral=True)
 
@@ -724,22 +778,62 @@ class Moderation(commands.Cog, name="moderation"):
     async def timeout_member(self, interaction: discord.Interaction, member: discord.Member, duration: str, reason: str = "No reason provided."):
         await interaction.response.defer(ephemeral=True)
         try:
+            # Log the command attempt
+            self.logger.info(
+                f"Timeout command used | "
+                f"Executor: {interaction.user} ({interaction.user.id}) | "
+                f"Target: {member} ({member.id}) | "
+                f"Duration: {duration} | "
+                f"Guild: {interaction.guild.name} ({interaction.guild.id})"
+            )
+
             secs = self.parse_duration(duration)
             if not secs:
                 raise ValueError("Invalid duration (use 10m, 2h, 1d, etc.)")
-            until = discord.utils.utcnow() + timedelta(seconds=secs)
+            
+            # Calculate timeout end time in UTC
+            until = datetime.now(timezone.utc) + timedelta(seconds=secs)
             await member.timeout(until, reason=reason)
+            
             case_id = await self.db.add_case(
                 interaction.guild.id, member.id, interaction.user.id,
-                "timeout", reason, extra={"duration": duration}
+                "timeout", reason, extra={
+                    "duration": duration,
+                    "expires_at": until.isoformat()
+                }
             )
+
+            # Send DM to the user
+            dm_sent = await self.send_moderation_dm(
+                member,
+                "Timeout",
+                interaction.guild,
+                reason,
+                duration,
+                case_id
+            )
+
+            # Create response embed
             e = discord.Embed(
-                description=f"⏲️ **Timeout** {member.mention} for `{duration}`\n**⚠️ Reason:** {reason}\n**🆔 Case:** `{case_id}`",
-                color=discord.Color.green()
+                description=(
+                    f"⏲️ **Timeout** {member.mention} for `{duration}`\n"
+                    f"**⚠️ Reason:** {reason}\n"
+                    f"**🆔 Case:** `{case_id}`\n"
+                    f"**Expires:** <t:{self.format_timestamp(until)}:R>"
+                ),
+                color=discord.Color.yellow(),
+                timestamp=datetime.now(timezone.utc)
             )
+            if not dm_sent:
+                e.add_field(
+                    name="Note",
+                    value="⚠️ Could not send DM to user",
+                    inline=False
+                )
+
             await interaction.followup.send(embed=e, ephemeral=True)
 
-            # Log
+            # Log the action
             await self.log_moderation_action(
                 interaction.guild,
                 "Timeout",
@@ -749,13 +843,44 @@ class Moderation(commands.Cog, name="moderation"):
                 duration
             )
 
+            # Log successful command execution
+            self.logger.info(
+                f"Timeout successful | "
+                f"Case: {case_id} | "
+                f"Executor: {interaction.user} ({interaction.user.id}) | "
+                f"Target: {member} ({member.id}) | "
+                f"Duration: {duration} | "
+                f"Guild: {interaction.guild.name} ({interaction.guild.id})"
+            )
+
         except ValueError as ve:
+            self.logger.warning(
+                f"Timeout failed (Invalid Duration) | "
+                f"Executor: {interaction.user} ({interaction.user.id}) | "
+                f"Target: {member} ({member.id}) | "
+                f"Duration: {duration} | "
+                f"Guild: {interaction.guild.name} ({interaction.guild.id}) | "
+                f"Error: {ve}"
+            )
             e = discord.Embed(description=f"❌ {ve}", color=discord.Color.red())
             await interaction.followup.send(embed=e, ephemeral=True)
         except discord.Forbidden:
+            self.logger.error(
+                f"Timeout failed (Forbidden) | "
+                f"Executor: {interaction.user} ({interaction.user.id}) | "
+                f"Target: {member} ({member.id}) | "
+                f"Guild: {interaction.guild.name} ({interaction.guild.id})"
+            )
             e = discord.Embed(description="❌ Missing permission to timeout.", color=discord.Color.red())
             await interaction.followup.send(embed=e, ephemeral=True)
         except discord.HTTPException as ex:
+            self.logger.error(
+                f"Timeout failed (HTTP Error) | "
+                f"Executor: {interaction.user} ({interaction.user.id}) | "
+                f"Target: {member} ({member.id}) | "
+                f"Guild: {interaction.guild.name} ({interaction.guild.id}) | "
+                f"Error: {ex}"
+            )
             e = discord.Embed(description=f"❌ Timeout failed: {ex}", color=discord.Color.red())
             await interaction.followup.send(embed=e, ephemeral=True)
 
@@ -1032,8 +1157,48 @@ class Moderation(commands.Cog, name="moderation"):
     #
     # --------------- /case (Prettier) ---------------
     #
+    def get_action_emoji(self, action_type: str) -> str:
+        """Get the appropriate emoji for a moderation action"""
+        action_emojis = {
+            "ban": "🔨",
+            "global_ban": "🌐",
+            "unban": "🔓",
+            "kick": "👢",
+            "timeout": "⏲️",
+            "warn": "⚠️",
+            "channel_lock": "🔒",
+            "channel_unlock": "🔓",
+            "note": "📝"
+        }
+        return action_emojis.get(action_type.lower(), "❓")
+
+    def get_action_color(self, action_type: str) -> discord.Color:
+        """Get the appropriate color for a moderation action"""
+        action_colors = {
+            "ban": discord.Color.red(),
+            "global_ban": discord.Color.dark_red(),
+            "unban": discord.Color.green(),
+            "kick": discord.Color.orange(),
+            "timeout": discord.Color.yellow(),
+            "warn": discord.Color.gold(),
+            "channel_lock": discord.Color.blue(),
+            "channel_unlock": discord.Color.green(),
+            "note": discord.Color.light_grey()
+        }
+        return action_colors.get(action_type.lower(), discord.Color.blurple())
+
+    def format_timestamp(self, dt: datetime) -> int:
+        """Convert datetime to Unix timestamp, ensuring UTC"""
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+
+    def get_current_timestamp(self) -> int:
+        """Get current UTC timestamp"""
+        return int(datetime.now(timezone.utc).timestamp())
+
     @app_commands.command(name="case", description="Look up a specific moderation case with improved formatting.")
-    @app_commands.describe(case_id="The short case ID (e.g. ABC123).")
+    @app_commands.describe(case_id="The case ID to look up (e.g. ABC123)")
     @app_commands.check(is_moderator)
     async def case_lookup(self, interaction: discord.Interaction, case_id: str):
         await interaction.response.defer(ephemeral=True)
@@ -1053,38 +1218,110 @@ class Moderation(commands.Cog, name="moderation"):
             timestamp_str = doc["timestamp"]
             extra = doc.get("extra", {})
 
-            # Convert to display forms
-            user_mention = f"<@{user_id}>"
-            mod_mention = f"<@{mod_id}>"
+            # Get user and mod objects if possible
+            try:
+                user = await self.bot.fetch_user(user_id)
+                user_str = f"{user} ({user.id})"
+            except Exception:
+                user_str = f"Unknown User ({user_id})"
 
-            dt_obj = datetime.fromisoformat(timestamp_str)
-            unix_ts = int(dt_obj.timestamp())
+            try:
+                mod = await self.bot.fetch_user(mod_id)
+                mod_str = f"{mod} ({mod.id})"
+            except Exception:
+                mod_str = f"Unknown Moderator ({mod_id})"
+
+            # Format timestamp
+            dt_obj = datetime.fromisoformat(timestamp_str).replace(tzinfo=timezone.utc)
+            unix_ts = self.format_timestamp(dt_obj)
+
+            # Get action emoji and color
+            action_emoji = self.get_action_emoji(action_type)
+            action_color = self.get_action_color(action_type)
 
             # Build a nicer embed
             embed = discord.Embed(
-                title=f"Case {case_id} - {action_type.upper()}",
-                color=discord.Color.blue(),
-                timestamp=datetime.utcnow()
+                title=f"{action_emoji} Case {case_id}",
+                color=action_color,
+                timestamp=dt_obj
             )
-            embed.set_footer(text=f"Server ID: {interaction.guild.id}")
 
-            embed.add_field(name="User", value=user_mention, inline=True)
-            embed.add_field(name="Moderator", value=mod_mention, inline=True)
-            embed.add_field(name="Action", value=action_type.upper(), inline=False)
-            embed.add_field(name="Reason", value=reason, inline=False)
-            embed.add_field(name="Created At", value=f"<t:{unix_ts}:F>", inline=False)
+            # Add case information with better formatting
+            embed.add_field(
+                name="📋 Action",
+                value=f"**{action_type.upper()}**",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="👤 Target User",
+                value=f"{user_str}\n<@{user_id}>",
+                inline=True
+            )
 
-            # Show relevant extras
-            if "expires_at" in extra and extra["expires_at"]:
-                embed.add_field(name="Expires At", value=str(extra["expires_at"]), inline=False)
+            embed.add_field(
+                name="👮 Moderator",
+                value=f"{mod_str}\n<@{mod_id}>",
+                inline=True
+            )
 
-            # If we have a 'roblox_id' or 'roblox_username' or 'duration', let's show them
-            if "roblox_id" in extra and extra["roblox_id"]:
-                embed.add_field(name="Roblox ID", value=str(extra["roblox_id"]), inline=True)
-            if "roblox_username" in extra and extra["roblox_username"]:
-                embed.add_field(name="Roblox User", value=str(extra["roblox_username"]), inline=True)
-            if "duration" in extra and extra["duration"]:
-                embed.add_field(name="Duration", value=str(extra["duration"]), inline=True)
+            # Add reason with proper formatting
+            formatted_reason = reason if len(reason) <= 1024 else reason[:1021] + "..."
+            embed.add_field(
+                name="📝 Reason",
+                value=formatted_reason,
+                inline=False
+            )
+
+            # Add timestamps with proper UTC handling
+            embed.add_field(
+                name="⏰ Executed",
+                value=f"<t:{unix_ts}:F> (<t:{unix_ts}:R>)",
+                inline=False
+            )
+
+            # Handle extra information
+            if extra:
+                extras_field = []
+                
+                # Duration for timeouts
+                if "duration" in extra:
+                    extras_field.append(f"**Duration:** {extra['duration']}")
+                
+                # Expiration for timed actions
+                if "expires_at" in extra and extra["expires_at"]:
+                    try:
+                        exp_dt = datetime.fromisoformat(extra["expires_at"]).replace(tzinfo=timezone.utc)
+                        exp_ts = self.format_timestamp(exp_dt)
+                        extras_field.append(f"**Expires:** <t:{exp_ts}:R>")
+                    except Exception:
+                        extras_field.append(f"**Expires:** {extra['expires_at']}")
+
+                # Roblox information for global bans
+                if "roblox_username" in extra or "roblox_id" in extra:
+                    roblox_info = []
+                    if "roblox_username" in extra and extra["roblox_username"]:
+                        roblox_info.append(f"**Username:** {extra['roblox_username']}")
+                    if "roblox_id" in extra and extra["roblox_id"]:
+                        roblox_info.append(f"**ID:** {extra['roblox_id']}")
+                    if roblox_info:
+                        extras_field.append("**Roblox Info:**\n" + "\n".join(roblox_info))
+
+                # Channel information for channel actions
+                if "channel_id" in extra:
+                    extras_field.append(f"**Channel:** <#{extra['channel_id']}> ({extra['channel_id']})")
+
+                if extras_field:
+                    embed.add_field(
+                        name="📌 Additional Information",
+                        value="\n".join(extras_field),
+                        inline=False
+                    )
+
+            # Add footer with IDs
+            embed.set_footer(
+                text=f"Server ID: {interaction.guild.id} • Case ID: {case_id}"
+            )
 
             # Log successful case lookup
             log_data = {
@@ -1092,7 +1329,7 @@ class Moderation(commands.Cog, name="moderation"):
                 "case_id": case_id,
                 "user_id": interaction.user.id,
                 "guild_id": interaction.guild.id,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "success": True,
                 "target_user_id": user_id,
                 "action_type": action_type
@@ -1357,6 +1594,49 @@ class Moderation(commands.Cog, name="moderation"):
         elif unit == 'd':
             return val * 86400
         return None
+
+    async def send_moderation_dm(
+        self,
+        user: Union[discord.Member, discord.User],
+        action: str,
+        guild: discord.Guild,
+        reason: str,
+        duration: Optional[str] = None,
+        case_id: Optional[str] = None
+    ):
+        """Send a DM to a user about a moderation action"""
+        try:
+            embed = discord.Embed(
+                title=f"Moderation Action: {action}",
+                color=discord.Color.red(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            embed.add_field(name="Server", value=guild.name, inline=False)
+            embed.add_field(name="Reason", value=reason, inline=False)
+            if duration:
+                embed.add_field(name="Duration", value=duration, inline=False)
+                # If it's a timeout, calculate and show expiration
+                if action.lower() == "timeout":
+                    secs = self.parse_duration(duration)
+                    if secs:
+                        expires_at = datetime.now(timezone.utc) + timedelta(seconds=secs)
+                        embed.add_field(
+                            name="Expires",
+                            value=f"<t:{self.format_timestamp(expires_at)}:R>",
+                            inline=False
+                        )
+            if case_id:
+                embed.add_field(name="Case ID", value=case_id, inline=False)
+            
+            embed.set_footer(text=f"Server ID: {guild.id}")
+            
+            await user.send(embed=embed)
+            return True
+        except (discord.Forbidden, discord.HTTPException) as e:
+            self.logger.warning(
+                f"Failed to send moderation DM to {user} ({user.id}): {str(e)}"
+            )
+            return False
 
 #
 # Cog setup
