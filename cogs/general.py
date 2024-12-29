@@ -8,6 +8,7 @@ Version: 6.2.0
 
 import platform
 import re
+from datetime import datetime
 
 import discord
 from discord import app_commands
@@ -241,21 +242,75 @@ class General(commands.Cog, name="general"):
 
         :param context: The hybrid command context.
         """
+        # Calculate uptime
+        uptime = datetime.utcnow() - self.bot.start_time
+        days = uptime.days
+        hours, remainder = divmod(uptime.seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        uptime_str = f"{days}d {hours}h {minutes}m {seconds}s"
+
+        # Get total members across all guilds
+        total_members = sum(guild.member_count for guild in self.bot.guilds)
+        
+        # Get total channels across all guilds
+        total_channels = sum(len(guild.channels) for guild in self.bot.guilds)
+
         embed = discord.Embed(
-            description="Made for SDHS",
-            color=0xBEBEFE,
+            title="🤖 Bot Information",
+            description=(
+                f"A bot designed for SDHS.\n"
+                f"Use `/help` to see available commands."
+            ),
+            color=0x3498DB,  # Discord Blue
+            timestamp=datetime.utcnow()
         )
-        embed.set_author(name="Bot Information")
-        embed.add_field(name="Owner:", value="elias_5", inline=True)
+
+        # Bot Stats
         embed.add_field(
-            name="Python Version:", value=f"{platform.python_version()}", inline=True
+            name="📊 Stats",
+            value=(
+                f"**Servers:** {len(self.bot.guilds)}\n"
+                f"**Members:** {total_members:,}\n"
+                f"**Channels:** {total_channels:,}\n"
+                f"**Commands Run:** {self.bot.command_count:,}\n"
+                f"**Messages Seen:** {self.bot.message_count:,}"
+            ),
+            inline=True
         )
+
+        # Technical Info
         embed.add_field(
-            name="Prefix:",
-            value=f"/ (Slash Commands) or {self.bot.config['prefix']} for normal commands",
-            inline=False,
+            name="💻 Technical",
+            value=(
+                f"**Python:** {platform.python_version()}\n"
+                f"**Discord.py:** {discord.__version__}\n"
+                f"**Latency:** {round(self.bot.latency * 1000)}ms\n"
+                f"**Uptime:** {uptime_str}\n"
+                f"**Platform:** {platform.system()} {platform.release()}"
+            ),
+            inline=True
         )
-        embed.set_footer(text=f"Requested by {context.author}")
+
+        # Command Info
+        embed.add_field(
+            name="⌨️ Commands",
+            value=(
+                f"**Prefix:** `/` (Slash) or `{self.bot.config['prefix']}`\n"
+                f"**Total Commands:** {len(set(self.bot.walk_commands()))}"
+            ),
+            inline=False
+        )
+
+        # Set footer
+        embed.set_footer(
+            text=f"Requested by {context.author}",
+            icon_url=context.author.display_avatar.url
+        )
+
+        # Set thumbnail if bot has avatar
+        if self.bot.user.avatar:
+            embed.set_thumbnail(url=self.bot.user.avatar.url)
+
         await context.send(embed=embed)
 
     @commands.hybrid_command(

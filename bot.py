@@ -4,6 +4,7 @@ import os
 import platform
 import random
 import sys
+from datetime import datetime
 
 import discord
 from discord.ext import commands, tasks
@@ -78,6 +79,9 @@ class DiscordBot(commands.Bot):
         self.logger = logger
         self.config = config
         self.database = None
+        self.start_time = datetime.utcnow()
+        self.command_count = 0
+        self.message_count = 0
 
     async def init_db(self) -> None:
         mongo_uri = os.getenv("MONGODB_URI")
@@ -130,9 +134,11 @@ class DiscordBot(commands.Bot):
     async def on_message(self, message: discord.Message) -> None:
         if message.author == self.user or message.author.bot:
             return
+        self.message_count += 1
         await self.process_commands(message)
 
     async def on_command_completion(self, context: Context) -> None:
+        self.command_count += 1
         full_command_name = context.command.qualified_name
         split = full_command_name.split(" ")
         executed_command = str(split[0])
