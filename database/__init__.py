@@ -1,7 +1,7 @@
 import logging
 import random
 import string
-from datetime import datetime
+from datetime import datetime, timedelta
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo.errors import DuplicateKeyError
 
@@ -20,6 +20,17 @@ class DatabaseManager:
             [("server_id", 1), ("case_id", 1)],
             unique=True
         )
+        await self.db["gdpr_requests"].create_index([("request_id", 1)], unique=True)
+        await self.db["gdpr_requests"].create_index([("requester_id", 1)])
+        await self.db["gdpr_requests"].create_index([("target_user_id", 1)])
+
+        # Command logs indexes
+        await self.db["command_logs"].create_index([("timestamp", -1)])
+        await self.db["command_logs"].create_index([("user_id", 1)])
+        await self.db["command_logs"].create_index([("guild_id", 1)])
+        await self.db["command_logs"].create_index([("command", 1)])
+        await self.db["command_logs"].create_index([("success", 1)])
+        
         self.logger.info("Database initialized.")
 
     #
@@ -531,3 +542,177 @@ class DatabaseManager:
     #
     async def close(self):
         self.logger.info("MongoDB connection closed.")
+
+    #
+    # ------------- GDPR REQUESTS -------------
+    #
+    async def check_recent_gdpr_request(self, requester_id: int) -> bool:
+        """Check if user has made a GDPR request in the last 24 hours"""
+        one_day_ago = (datetime.utcnow() - timedelta(days=1)).isoformat()
+        recent_request = await self.db["gdpr_requests"].find_one({
+            "requester_id": str(requester_id),
+            "created_at": {"$gt": one_day_ago}
+        })
+        return recent_request is not None
+
+    async def create_gdpr_request(
+        self,
+        request_id: str,
+        requester_id: int,
+        target_user_id: int,
+        data: dict
+    ) -> str:
+        """Create a new GDPR request in pending status"""
+        doc = {
+            "request_id": request_id,
+            "requester_id": str(requester_id),
+            "target_user_id": str(target_user_id),
+            "status": "pending",
+            "data": data,
+            "created_at": datetime.utcnow().isoformat(),
+            "reviewed_at": None,
+            "reviewer_id": None,
+            "denial_reason": None
+        }
+        await self.db["gdpr_requests"].insert_one(doc)
+        return request_id
+
+    async def get_gdpr_request(self, request_id: str) -> dict:
+        """Get a GDPR request by its ID"""
+        return await self.db["gdpr_requests"].find_one({"request_id": request_id})
+
+    async def update_gdpr_request(
+        self,
+        request_id: str,
+        status: str,
+        reviewer_id: int,
+        denial_reason: str = None
+    ) -> bool:
+        """Update a GDPR request's status"""
+        update = {
+            "status": status,
+            "reviewed_at": datetime.utcnow().isoformat(),
+            "reviewer_id": str(reviewer_id)
+        }
+        if denial_reason:
+            update["denial_reason"] = denial_reason
+
+        result = await self.db["gdpr_requests"].update_one(
+            {"request_id": request_id},
+            {"$set": update}
+        )
+        return result.modified_count > 0
+
+    #
+    # ------------- COMMAND LOGGING -------------
+    #
+    async def log_command(self, log_data: dict) -> str:
+        """
+        Log a command execution to the database.
+        Returns the inserted document's ID.
+        """
+        # Convert IDs to strings for consistency
+        if "guild_id" in log_data and log_data["guild_id"]:
+            log_data["guild_id"] = str(log_data["guild_id"])
+        if "channel_id" in log_data and log_data["channel_id"]:
+            log_data["channel_id"] = str(log_data["channel_id"])
+        if "user_id" in log_data and log_data["user_id"]:
+            log_data["user_id"] = str(log_data["user_id"])
+
+        # Add timestamp if not present
+        if "timestamp" not in log_data:
+            log_data["timestamp"] = datetime.utcnow().isoformat()
+
+        # Insert the log
+        result = await self.db["command_logs"].insert_one(log_data)
+        return str(result.inserted_id)
+
+    async def get_user_command_logs(
+        self,
+        user_id: int,
+        limit: int = 100,
+        skip: int = 0,
+        success_only: bool = None,
+        command_filter: str = None
+    ) -> list:
+        """Get command logs for a specific user with optional filtering."""
+        query = {"user_id": str(user_id)}
+        if success_only is not None:
+            query["success"] = success_only
+        if command_filter:
+            query["command"] = command_filter
+
+        cursor = self.db["command_logs"].find(query)
+        cursor.sort("timestamp", -1).skip(skip).limit(limit)
+        return await cursor.to_list(length=limit)
+
+    async def get_guild_command_logs(
+        self,
+        guild_id: int,
+        limit: int = 100,
+        skip: int = 0,
+        success_only: bool = None,
+        command_filter: str = None
+    ) -> list:
+        """Get command logs for a specific guild with optional filtering."""
+        query = {"guild_id": str(guild_id)}
+        if success_only is not None:
+            query["success"] = success_only
+        if command_filter:
+            query["command"] = command_filter
+
+        cursor = self.db["command_logs"].find(query)
+        cursor.sort("timestamp", -1).skip(skip).limit(limit)
+        return await cursor.to_list(length=limit)
+
+    async def get_command_usage_stats(
+        self,
+        guild_id: int = None,
+        since: datetime = None
+    ) -> dict:
+        """Get command usage statistics, optionally filtered by guild and time."""
+        match_stage = {}
+        if guild_id:
+            match_stage["guild_id"] = str(guild_id)
+        if since:
+            match_stage["timestamp"] = {"$gt": since.isoformat()}
+
+        pipeline = []
+        if match_stage:
+            pipeline.append({"$match": match_stage})
+
+        pipeline.extend([
+            {
+                "$group": {
+                    "_id": "$command",
+                    "total_uses": {"$sum": 1},
+                    "successful_uses": {
+                        "$sum": {"$cond": ["$success", 1, 0]}
+                    },
+                    "failed_uses": {
+                        "$sum": {"$cond": ["$success", 0, 1]}
+                    },
+                    "unique_users": {"$addToSet": "$user_id"}
+                }
+            },
+            {
+                "$project": {
+                    "command": "$_id",
+                    "total_uses": 1,
+                    "successful_uses": 1,
+                    "failed_uses": 1,
+                    "unique_users": {"$size": "$unique_users"}
+                }
+            },
+            {"$sort": {"total_uses": -1}}
+        ])
+
+        return await self.db["command_logs"].aggregate(pipeline).to_list(None)
+
+    async def cleanup_old_logs(self, days_to_keep: int = 30) -> int:
+        """Remove command logs older than the specified number of days."""
+        cutoff_date = (datetime.utcnow() - timedelta(days=days_to_keep)).isoformat()
+        result = await self.db["command_logs"].delete_many(
+            {"timestamp": {"$lt": cutoff_date}}
+        )
+        return result.deleted_count

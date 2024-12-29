@@ -142,16 +142,117 @@ class DiscordBot(commands.Bot):
         full_command_name = context.command.qualified_name
         split = full_command_name.split(" ")
         executed_command = str(split[0])
-        if context.guild is not None:
+
+        # Get user roles and permissions
+        roles = []
+        permissions = []
+        is_admin = False
+        if context.guild:
+            roles = [f"{role.name} ({role.id})" for role in context.author.roles]
+            permissions = [perm[0] for perm, value in context.author.guild_permissions if value]
+            is_admin = context.author.guild_permissions.administrator
+
+        # Create detailed log entry
+        log_data = {
+            "command": executed_command,
+            "full_command": context.message.content,
+            "user_id": context.author.id,
+            "user_name": str(context.author),
+            "channel_id": context.channel.id if hasattr(context.channel, 'id') else None,
+            "channel_name": context.channel.name if hasattr(context.channel, 'name') else "DM",
+            "guild_id": context.guild.id if context.guild else None,
+            "guild_name": context.guild.name if context.guild else "DM",
+            "timestamp": datetime.utcnow().isoformat(),
+            "roles": roles,
+            "permissions": permissions,
+            "is_admin": is_admin,
+            "is_owner": await self.is_owner(context.author),
+            "success": True
+        }
+
+        # Log to database
+        try:
+            await self.database.log_command(log_data)
+        except Exception as e:
+            self.logger.error(f"Failed to log command to database: {str(e)}")
+
+        # Log to console with color formatting
+        if context.guild:
             self.logger.info(
-                f"Executed {executed_command} command in {context.guild.name} (ID: {context.guild.id}) by {context.author} (ID: {context.author.id})"
+                f"Command executed: {log_data['command']} | "
+                f"By: {context.author} ({context.author.id}) | "
+                f"In: {context.guild.name} ({context.guild.id}) - #{context.channel.name} | "
+                f"Admin: {is_admin} | "
+                f"Owner: {log_data['is_owner']} | "
+                f"Success: {log_data['success']}"
             )
         else:
             self.logger.info(
-                f"Executed {executed_command} command by {context.author} (ID: {context.author.id}) in DMs"
+                f"Command executed: {log_data['command']} | "
+                f"By: {context.author} ({context.author.id}) | "
+                f"In: DMs | "
+                f"Owner: {log_data['is_owner']} | "
+                f"Success: {log_data['success']}"
             )
 
     async def on_command_error(self, context: Context, error) -> None:
+        # Log command error
+        full_command_name = context.command.qualified_name if context.command else "Unknown"
+        split = full_command_name.split(" ")
+        executed_command = str(split[0])
+
+        # Get user roles and permissions
+        roles = []
+        permissions = []
+        is_admin = False
+        if context.guild:
+            roles = [f"{role.name} ({role.id})" for role in context.author.roles]
+            permissions = [perm[0] for perm, value in context.author.guild_permissions if value]
+            is_admin = context.author.guild_permissions.administrator
+
+        # Create error log entry
+        log_data = {
+            "command": executed_command,
+            "full_command": context.message.content,
+            "user_id": context.author.id,
+            "user_name": str(context.author),
+            "channel_id": context.channel.id if hasattr(context.channel, 'id') else None,
+            "channel_name": context.channel.name if hasattr(context.channel, 'name') else "DM",
+            "guild_id": context.guild.id if context.guild else None,
+            "guild_name": context.guild.name if context.guild else "DM",
+            "timestamp": datetime.utcnow().isoformat(),
+            "roles": roles,
+            "permissions": permissions,
+            "is_admin": is_admin,
+            "is_owner": await self.is_owner(context.author),
+            "success": False,
+            "error": str(error),
+            "error_type": type(error).__name__
+        }
+
+        # Log to database
+        try:
+            await self.database.log_command(log_data)
+        except Exception as e:
+            self.logger.error(f"Failed to log command error to database: {str(e)}")
+
+        # Log error to console
+        if context.guild:
+            self.logger.error(
+                f"Command failed: {log_data['command']} | "
+                f"By: {context.author} ({context.author.id}) | "
+                f"In: {context.guild.name} ({context.guild.id}) - #{context.channel.name} | "
+                f"Error: {log_data['error_type']}"
+            )
+        else:
+            self.logger.error(
+                f"Command failed: {log_data['command']} | "
+                f"By: {context.author} ({context.author.id}) | "
+                f"In: DMs | "
+                f"Error: {log_data['error_type']}"
+            )
+
+        # Handle specific error types with embeds
         if isinstance(error, commands.CommandOnCooldown):
             minutes, seconds = divmod(error.retry_after, 60)
             hours, minutes = divmod(minutes, 60)
