@@ -8,6 +8,23 @@ import math
 import aiohttp
 import asyncio
 from collections import deque
+from typing import List, Dict, Any, Optional
+
+# Constants for better maintainability
+EMBED_COLORS = {
+    'success': 0x2ECC71,  # Green
+    'warning': 0xF1C40F,  # Yellow
+    'error': 0xE74C3C,    # Red
+    'info': 0x3498DB      # Blue
+}
+
+DEFAULT_SETTINGS = {
+    'automod_mute_duration': 3600,
+    'automod_spam_limit': 5,
+    'automod_spam_window': 5,
+    'automod_enabled': True,
+    'automod_logging_enabled': True
+}
 
 async def is_admin_or_owner(interaction: discord.Interaction) -> bool:
     bot = interaction.client
@@ -19,7 +36,7 @@ async def is_admin_or_owner(interaction: discord.Interaction) -> bool:
     raise app_commands.MissingPermissions(['administrator'])
 
 class WarningsView(discord.ui.View):
-    def __init__(self, warnings, user, per_page=7):
+    def __init__(self, warnings: List[Any], user: discord.Member, per_page: int = 7):
         super().__init__(timeout=180)
         self.warnings = warnings
         self.user = user
@@ -27,37 +44,52 @@ class WarningsView(discord.ui.View):
         self.current_page = 0
         self.total_pages = math.ceil(len(warnings) / per_page)
 
-        self.previous_button = discord.ui.Button(label="Previous", style=discord.ButtonStyle.blurple, disabled=True)
-        self.next_button = discord.ui.Button(label="Next", style=discord.ButtonStyle.blurple, disabled=(self.total_pages <= 1))
+        self.previous_button = discord.ui.Button(
+            label="◀ Previous",
+            style=discord.ButtonStyle.blurple,
+            disabled=True,
+            custom_id="prev_page"
+        )
+        self.next_button = discord.ui.Button(
+            label="Next ▶",
+            style=discord.ButtonStyle.blurple,
+            disabled=(self.total_pages <= 1),
+            custom_id="next_page"
+        )
+        
         self.previous_button.callback = self.previous_page
         self.next_button.callback = self.next_page
 
         self.add_item(self.previous_button)
         self.add_item(self.next_button)
 
-    def create_embed(self):
+    def create_embed(self) -> discord.Embed:
         start = self.current_page * self.per_page
         end = start + self.per_page
+        
         embed = discord.Embed(
-            title=f"Warnings for {self.user}",
-            color=0xFF0000,
+            title=f"📋 Warning History for {self.user}",
+            color=EMBED_COLORS['warning'],
             description=f"Page {self.current_page + 1}/{self.total_pages}",
             timestamp=datetime.utcnow()
         )
+        
         for warn in self.warnings[start:end]:
-            warn_id = warn[5]
-            reason = warn[3]
-            moderator_id = warn[2]
-            timestamp_val = int(warn[4])
-            embed.add_field(
-                name=f"Warning ID: {warn_id}",
-                value=(
-                    f"**Reason:** {reason}\n"
-                    f"**Moderator:** <@{moderator_id}>\n"
-                    f"**Date:** <t:{timestamp_val}:F>"
-                ),
-                inline=False,
+            warn_id, reason, moderator_id, timestamp_val = warn[5], warn[3], warn[2], int(warn[4])
+            
+            formatted_warning = (
+                f"**Reason:** {reason}\n"
+                f"**Moderator:** <@{moderator_id}>\n"
+                f"**Date:** <t:{timestamp_val}:F>"
             )
+            
+            embed.add_field(
+                name=f"🚫 Warning ID: {warn_id}",
+                value=formatted_warning,
+                inline=False
+            )
+            
+        embed.set_footer(text=f"Total Warnings: {len(self.warnings)}")
         return embed
 
     async def previous_page(self, interaction: discord.Interaction):
@@ -81,6 +113,15 @@ class WarningsView(discord.ui.View):
 def is_warning_expired(timestamp_val: int, days: int = 2) -> bool:
     warning_time = datetime.utcfromtimestamp(timestamp_val)
     return (datetime.utcnow() - warning_time) > timedelta(days=days)
+
+def format_duration(duration: timedelta) -> tuple[int, str]:
+    """Format a duration into a Unix timestamp and human-readable format."""
+    future_time = int((datetime.utcnow() + duration).timestamp())
+    formatted = (
+        f"<t:{future_time}:R> "  # Relative time (e.g., "in 1 hour")
+        f"(<t:{future_time}:f>)"  # Full date and time
+    )
+    return future_time, formatted
 
 class AutoMod(commands.Cog):
     """
@@ -139,7 +180,6 @@ class AutoMod(commands.Cog):
                 reason=reason
             )
 
-            # Create a new random case ID for this violation
             case_id = await self.db.add_case(
                 server_id=message.guild.id,
                 user_id=message.author.id,
@@ -149,14 +189,26 @@ class AutoMod(commands.Cog):
                 extra={"warn_id": warn_id}
             )
 
-            warning_msg = (
-                f"{message.author.mention}, your message violated the server rules.\n"
-                f"**Reason:** {reason}"
+            # Enhanced warning message with emojis and better formatting
+            warning_embed = discord.Embed(
+                title="⚠️ Rule Violation Detected",
+                description=(
+                    f"**User:** {message.author.mention} (`{message.author.id}`)\n"
+                    f"**Channel:** {message.channel.mention}\n"
+                    f"**Reason:** {reason}\n"
+                    f"**Time:** <t:{int(datetime.utcnow().timestamp())}:F>"
+                ),
+                color=EMBED_COLORS['warning'],
+                timestamp=datetime.utcnow()
             )
-            moderation_message = await message.channel.send(warning_msg)
+            warning_embed.set_footer(text=f"Warning ID: {warn_id} | Case ID: {case_id}")
+            
+            moderation_message = await message.channel.send(embed=warning_embed)
 
+            # Handle warning accumulation
             all_warnings = await self.db.get_warnings(
-                user_id=message.author.id, server_id=message.guild.id
+                user_id=message.author.id,
+                server_id=message.guild.id
             )
             non_expired_warnings = [
                 w for w in all_warnings
@@ -165,55 +217,103 @@ class AutoMod(commands.Cog):
             warning_count = len(non_expired_warnings)
 
             server_settings = await self.get_server_settings(message.guild.id)
-            automod_mute_duration = server_settings.get('automod_mute_duration', 3600)
+            automod_mute_duration = server_settings.get('automod_mute_duration', DEFAULT_SETTINGS['automod_mute_duration'])
+
             if warning_count % 3 == 0 and warning_count > 0:
                 duration = timedelta(seconds=automod_mute_duration)
-                await message.author.timeout(duration, reason=f"Reached {warning_count} warnings")
-                duration_str = str(duration)
-                timeout_notice = (
-                    f"🚫 {message.author.mention} has been timed out for {duration_str} due to accumulating {warning_count} warnings."
+                await message.author.timeout(duration, reason=f"Accumulated {warning_count} warnings")
+                
+                future_time, formatted_duration = format_duration(duration)
+                
+                timeout_embed = discord.Embed(
+                    title="🔇 Automatic Timeout Applied",
+                    description=(
+                        f"**User:** {message.author.mention} (`{message.author.id}`)\n"
+                        f"**Duration:** {formatted_duration}\n"
+                        f"**Reason:** Accumulated {warning_count} warnings\n"
+                        f"**Warnings:** {warning_count} active warnings"
+                    ),
+                    color=EMBED_COLORS['error'],
+                    timestamp=datetime.utcnow()
                 )
-                await message.channel.send(timeout_notice)
+                timeout_embed.set_footer(text=f"Timeout ends • <t:{future_time}:R>")
+                await message.channel.send(embed=timeout_embed)
 
-                # Add a separate "mute" case if we do a timeout
+                # Add timeout case
                 await self.db.add_case(
                     server_id=message.guild.id,
                     user_id=message.author.id,
                     moderator_id=self.bot.user.id,
                     action_type="mute",
                     reason=f"Auto mute for {warning_count} warnings",
-                    extra={"duration": duration_str}
+                    extra={
+                        "duration": str(duration),
+                        "end_time": future_time
+                    }
                 )
 
+            # Clean up warning message after delay
             await asyncio.sleep(10)
             await moderation_message.delete()
 
+            # Log the violation if enabled
             if log_warn and server_settings.get('automod_logging_enabled'):
-                log_channel_id = server_settings.get('automod_log_channel_id')
-                if log_channel_id:
-                    log_channel = message.guild.get_channel(int(log_channel_id))
-                    if log_channel:
-                        log_embed = discord.Embed(
-                            title="🚨 Automod Violation",
-                            color=0xFF0000,
-                            timestamp=datetime.utcnow()
-                        )
-                        log_embed.add_field(name="User", value=message.author.mention, inline=True)
-                        log_embed.add_field(name="Action", value=reason, inline=True)
-                        log_embed.add_field(name="Channel", value=message.channel.mention, inline=True)
-                        if delete_message:
-                            log_embed.add_field(name="Offending Message", value=f"||{message.content}||", inline=False)
-                        else:
-                            log_embed.add_field(name="Offending Message", value="(Not Deleted)", inline=False)
-                        log_embed.set_footer(text=f"User ID: {message.author.id} | Warn ID: {warn_id} | Case ID: {case_id}")
-                        await log_channel.send(embed=log_embed)
+                await self._log_violation(message, reason, warn_id, case_id, delete_message)
 
-            self.bot.logger.info(
-                f"Handled violating message from {message.author} (ID:{message.author.id}) with reason: {reason}. "
-                f"Warnings (non-expired): {warning_count}, Message: '{message.content}'"
-            )
         except Exception as e:
             self.bot.logger.error(f"Failed to handle message violation: {e}")
+
+    async def _log_violation(self, message: discord.Message, reason: str, warn_id: int, case_id: str, delete_message: bool):
+        server_settings = await self.get_server_settings(message.guild.id)
+        log_channel_id = server_settings.get('automod_log_channel_id')
+        
+        if not log_channel_id:
+            return
+            
+        log_channel = message.guild.get_channel(int(log_channel_id))
+        if not log_channel:
+            return
+            
+        current_time = int(datetime.utcnow().timestamp())
+        log_embed = discord.Embed(
+            title="🚨 AutoMod Action Log",
+            description=(
+                f"Action taken <t:{current_time}:R>\n"
+                f"**Channel:** {message.channel.mention}"
+            ),
+            color=EMBED_COLORS['info'],
+            timestamp=datetime.utcnow()
+        )
+        
+        log_embed.add_field(
+            name="User Information",
+            value=(
+                f"**User:** {message.author.mention}\n"
+                f"**ID:** `{message.author.id}`\n"
+                f"**Created:** <t:{int(message.author.created_at.timestamp())}:R>"
+            ),
+            inline=True
+        )
+        
+        log_embed.add_field(
+            name="Violation Details",
+            value=(
+                f"**Action:** {reason}\n"
+                f"**Warning ID:** `{warn_id}`\n"
+                f"**Case ID:** `{case_id}`"
+            ),
+            inline=True
+        )
+        
+        if delete_message and message.content:
+            log_embed.add_field(
+                name="Message Content",
+                value=f"```{message.content[:1000]}```" if message.content else "(No content)",
+                inline=False
+            )
+            
+        log_embed.set_footer(text=f"Logged at • <t:{current_time}:F>")
+        await log_channel.send(embed=log_embed)
 
     def record_message_for_spam(self, user_id: int, spam_time_window: int):
         now = datetime.utcnow().timestamp()
@@ -369,29 +469,30 @@ class AutoMod(commands.Cog):
     async def warn(self, interaction: discord.Interaction, user: discord.Member, reason: str):
         await interaction.response.defer(ephemeral=True)
 
+        # Enhanced validation checks with better error messages
         if user.id == self.bot.user.id:
             embed = discord.Embed(
-                title="⚠️ Warning Issuance Failed",
+                title="❌ Warning Not Allowed",
                 description="I cannot warn myself.",
-                color=0x8B0000
+                color=EMBED_COLORS['error']
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         if user.id == interaction.guild.owner_id:
             embed = discord.Embed(
-                title="⚠️ Warning Issuance Failed",
-                description="You cannot warn the server owner.",
-                color=0x8B0000
+                title="❌ Warning Not Allowed",
+                description="The server owner cannot be warned.",
+                color=EMBED_COLORS['error']
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         if user.top_role >= interaction.user.top_role and interaction.user != interaction.guild.owner:
             embed = discord.Embed(
-                title="⚠️ Warning Issuance Failed",
-                description="You cannot warn a member with equal or higher roles.",
-                color=0x8B0000
+                title="❌ Permission Denied",
+                description="You cannot warn members with equal or higher roles.",
+                color=EMBED_COLORS['error']
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
@@ -404,7 +505,6 @@ class AutoMod(commands.Cog):
                 reason=reason,
             )
 
-            # Random string case ID
             case_id = await self.db.add_case(
                 server_id=interaction.guild.id,
                 user_id=user.id,
@@ -414,90 +514,131 @@ class AutoMod(commands.Cog):
                 extra={"warn_id": warn_id}
             )
 
+            # Enhanced success embed
             embed = discord.Embed(
-                title="✅ Warning Issued",
-                color=0x00FF00,
+                title="✅ Warning Issued Successfully",
+                color=EMBED_COLORS['success'],
                 timestamp=datetime.utcnow()
             )
-            embed.add_field(name="User", value=user.mention, inline=True)
+            embed.add_field(name="User", value=f"{user.mention} (`{user.id}`)", inline=True)
+            embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
             embed.add_field(name="Reason", value=reason, inline=False)
-            embed.add_field(name="Warning ID", value=str(warn_id), inline=True)
-            embed.add_field(name="Case ID", value=str(case_id), inline=True)
-            embed.set_footer(text=f"Moderator: {interaction.user} (ID: {interaction.user.id})")
+            embed.add_field(name="Warning ID", value=f"`{warn_id}`", inline=True)
+            embed.add_field(name="Case ID", value=f"`{case_id}`", inline=True)
+            
             await interaction.followup.send(embed=embed, ephemeral=True)
 
+            # Enhanced DM notification
             try:
                 dm_embed = discord.Embed(
-                    title="⚠️ You Have Been Warned",
-                    color=0xFFA500,
+                    title="⚠️ Warning Received",
+                    color=EMBED_COLORS['warning'],
                     timestamp=datetime.utcnow()
                 )
                 dm_embed.add_field(name="Server", value=interaction.guild.name, inline=False)
                 dm_embed.add_field(name="Reason", value=reason, inline=False)
-                dm_embed.add_field(name="Warning ID", value=str(warn_id), inline=True)
-                dm_embed.add_field(name="Case ID", value=str(case_id), inline=True)
-                dm_embed.set_footer(text="Please adhere to the server rules to avoid further actions.")
+                dm_embed.add_field(name="Warning ID", value=f"`{warn_id}`", inline=True)
+                dm_embed.add_field(name="Case ID", value=f"`{case_id}`", inline=True)
+                dm_embed.set_footer(text="Please review the server rules to avoid further warnings.")
+                
                 await user.send(embed=dm_embed)
             except discord.Forbidden:
-                self.bot.logger.warning(f"Could not DM {user} about their warning.")
+                self.bot.logger.warning(f"Could not DM user {user.id} about their warning.")
 
-            all_warnings = await self.db.get_warnings(user_id=user.id, server_id=interaction.guild.id)
-            non_expired_warnings = [
-                w for w in all_warnings
-                if not is_warning_expired(int(w[4]))
-            ]
-            warning_count = len(non_expired_warnings)
-
-            server_settings = await self.get_server_settings(interaction.guild.id)
-            automod_mute_duration = server_settings.get('automod_mute_duration', 3600)
-
-            if warning_count % 3 == 0 and warning_count > 0:
-                duration = timedelta(seconds=automod_mute_duration)
-                await user.timeout(duration, reason=f"Reached {warning_count} warnings via /warn command")
-                duration_str = str(duration)
-                timeout_notice = (
-                    f"🚫 {user.mention} has been timed out for {duration_str} due to accumulating {warning_count} warnings."
-                )
-                system_channel = interaction.guild.system_channel
-                if system_channel:
-                    await system_channel.send(timeout_notice)
-
-                if server_settings.get('automod_logging_enabled'):
-                    log_channel_id = server_settings.get('automod_log_channel_id')
-                    if log_channel_id:
-                        log_channel = interaction.guild.get_channel(int(log_channel_id))
-                        if log_channel:
-                            log_embed = discord.Embed(
-                                title="🚨 User Timeout",
-                                color=0xFFA500,
-                                timestamp=datetime.utcnow()
-                            )
-                            log_embed.add_field(name="User", value=user.mention, inline=True)
-                            log_embed.add_field(name="Action", value="Accumulated Warnings via /warn command", inline=True)
-                            log_embed.add_field(name="Duration", value=duration_str, inline=True)
-                            log_embed.add_field(name="Reason", value=f"Reached {warning_count} warnings.", inline=False)
-                            log_embed.set_footer(text=f"User ID: {user.id}")
-                            await log_channel.send(embed=log_embed)
-
-                # Also log a separate "mute" case if you want:
-                await self.db.add_case(
-                    server_id=interaction.guild.id,
-                    user_id=user.id,
-                    moderator_id=interaction.user.id,
-                    action_type="mute",
-                    reason=f"Reached {warning_count} warnings (auto-timeout)",
-                    extra={"duration": duration_str}
-                )
+            # Handle warning accumulation
+            await self._handle_warning_accumulation(interaction, user)
 
         except Exception as e:
             self.bot.logger.error(f"Failed to issue warning to {user}: {e}")
-            embed = discord.Embed(
+            error_embed = discord.Embed(
                 title="❌ Error",
                 description="An error occurred while issuing the warning.",
-                color=0x8B0000,
-                timestamp=datetime.utcnow()
+                color=EMBED_COLORS['error']
             )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
+
+    async def _handle_warning_accumulation(self, interaction: discord.Interaction, user: discord.Member):
+        all_warnings = await self.db.get_warnings(user_id=user.id, server_id=interaction.guild.id)
+        non_expired_warnings = [w for w in all_warnings if not is_warning_expired(int(w[4]))]
+        warning_count = len(non_expired_warnings)
+
+        if warning_count % 3 == 0 and warning_count > 0:
+            server_settings = await self.get_server_settings(interaction.guild.id)
+            automod_mute_duration = server_settings.get('automod_mute_duration', DEFAULT_SETTINGS['automod_mute_duration'])
+            duration = timedelta(seconds=automod_mute_duration)
+            
+            try:
+                await user.timeout(duration, reason=f"Accumulated {warning_count} warnings")
+                
+                future_time, formatted_duration = format_duration(duration)
+                
+                timeout_embed = discord.Embed(
+                    title="🔇 Automatic Timeout Applied",
+                    description=(
+                        f"**User:** {user.mention} (`{user.id}`)\n"
+                        f"**Duration:** {formatted_duration}\n"
+                        f"**Reason:** Accumulated {warning_count} warnings\n"
+                        f"**Warnings:** {warning_count} active warnings"
+                    ),
+                    color=EMBED_COLORS['error'],
+                    timestamp=datetime.utcnow()
+                )
+                timeout_embed.set_footer(text=f"Timeout ends • <t:{future_time}:R>")
+                
+                if interaction.guild.system_channel:
+                    await interaction.guild.system_channel.send(embed=timeout_embed)
+
+                # Log the timeout if enabled
+                if server_settings.get('automod_logging_enabled'):
+                    await self._log_timeout(interaction, user, duration, warning_count, future_time)
+
+            except discord.Forbidden:
+                self.bot.logger.error(f"Failed to timeout user {user.id} due to missing permissions.")
+
+    async def _log_timeout(self, interaction: discord.Interaction, user: discord.Member, duration: timedelta, warning_count: int, end_time: int):
+        server_settings = await self.get_server_settings(interaction.guild.id)
+        log_channel_id = server_settings.get('automod_log_channel_id')
+        
+        if not log_channel_id:
+            return
+            
+        log_channel = interaction.guild.get_channel(int(log_channel_id))
+        if not log_channel:
+            return
+
+        current_time = int(datetime.utcnow().timestamp())
+        log_embed = discord.Embed(
+            title="🔇 Timeout Log",
+            description=(
+                f"Timeout issued <t:{current_time}:R>\n"
+                f"Expires <t:{end_time}:R>"
+            ),
+            color=EMBED_COLORS['error'],
+            timestamp=datetime.utcnow()
+        )
+        
+        log_embed.add_field(
+            name="User Information",
+            value=(
+                f"**User:** {user.mention}\n"
+                f"**ID:** `{user.id}`\n"
+                f"**Created:** <t:{int(user.created_at.timestamp())}:R>"
+            ),
+            inline=True
+        )
+        
+        log_embed.add_field(
+            name="Timeout Details",
+            value=(
+                f"**Duration:** {str(duration)}\n"
+                f"**Warning Count:** {warning_count}\n"
+                f"**Reason:** Accumulated warnings"
+            ),
+            inline=True
+        )
+        
+        log_embed.set_footer(text=f"Moderator: {interaction.user} • ID: {interaction.user.id}")
+        await log_channel.send(embed=log_embed)
 
     @app_commands.command(name="clearwarnings", description="Clear all warnings for a user.")
     @app_commands.describe(user="The user to clear warnings for.")
