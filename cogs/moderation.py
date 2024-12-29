@@ -7,187 +7,365 @@ from datetime import datetime, timedelta
 from typing import Union, Optional
 from discord.ext import commands
 from discord import app_commands
+import logging
 
 #
 # Permissions Checks
 #
 async def is_admin_or_owner(interaction: discord.Interaction) -> bool:
-    return (
-        interaction.user.guild_permissions.administrator
-        or interaction.user.id == interaction.guild.owner_id
-    )
+    """Check if user is admin or owner with detailed error handling"""
+    try:
+        # Check bot owner status first
+        if not hasattr(interaction.client, 'owner_id'):
+            app_info = await interaction.client.application_info()
+            interaction.client.owner_id = app_info.owner.id
+        
+        if interaction.user.id == interaction.client.owner_id:
+            return True
+
+        # Check admin status
+        if interaction.user.guild_permissions.administrator:
+            return True
+
+        # If neither, raise with detailed message
+        roles_str = ", ".join(role.name for role in interaction.user.roles[1:])  # Skip @everyone
+        raise app_commands.MissingPermissions(['administrator'])
+    except Exception as e:
+        interaction.client.logger.error(
+            f"Permission check error in is_admin_or_owner: {str(e)} | "
+            f"User: {interaction.user} ({interaction.user.id}) | "
+            f"Guild: {interaction.guild.name} ({interaction.guild.id})"
+        )
+        raise
 
 async def is_moderator(interaction: discord.Interaction) -> bool:
-    bot = interaction.client
-    if not hasattr(bot, 'owner_id'):
-        app_info = await bot.application_info()
-        bot.owner_id = app_info.owner.id
-
-    if interaction.user.id == bot.owner_id:
-        return True
-    if interaction.user.guild_permissions.administrator:
-        return True
-
-    allowed_roles = await bot.database.get_moderation_allowed_roles(interaction.guild.id)
-    user_roles = [r.id for r in interaction.user.roles]
-    if any(r_id in allowed_roles for r_id in user_roles):
-        return True
-
-    raise app_commands.MissingPermissions(['administrator'])
-
-#
-# Logging
-#
-async def log_moderation_action(
-    bot: commands.Bot,
-    guild: discord.Guild,
-    action: str,
-    executor: discord.Member,
-    target: Union[discord.Member, discord.User, None],
-    reason: str,
-    duration: Optional[str] = None
-):
-    """
-    Logs a moderation action (ban, unban, kick, global_ban, etc.) to the set mod log channel.
-    """
+    """Check if user is moderator with detailed error handling"""
     try:
-        log_ch_id = await bot.database.get_mod_log_channel(guild.id)
-        if not log_ch_id:
-            return
-        channel = guild.get_channel(log_ch_id)
-        if not channel:
-            return
+        bot = interaction.client
+        
+        # Check bot owner status first
+        if not hasattr(bot, 'owner_id'):
+            app_info = await bot.application_info()
+            bot.owner_id = app_info.owner.id
 
-        embed = discord.Embed(
-            title=action,
-            color=discord.Color.gold(),
-            timestamp=datetime.utcnow()
+        if interaction.user.id == bot.owner_id:
+            return True
+
+        # Check admin status
+        if interaction.user.guild_permissions.administrator:
+            return True
+
+        # Check mod roles
+        allowed_roles = await bot.database.get_moderation_allowed_roles(interaction.guild.id)
+        user_roles = [r.id for r in interaction.user.roles]
+        if any(r_id in allowed_roles for r_id in user_roles):
+            return True
+
+        # If we get here, user doesn't have permission
+        # Create detailed error message
+        roles_str = ", ".join(role.name for role in interaction.user.roles[1:])  # Skip @everyone
+        
+        # Log the permission denial
+        bot.logger.warning(
+            f"Permission denied | "
+            f"User: {interaction.user} ({interaction.user.id}) | "
+            f"Guild: {interaction.guild.name} ({interaction.guild.id}) | "
+            f"Roles: {roles_str}"
         )
-        embed.add_field(name="Executor", value=f"{executor} (ID: {executor.id})", inline=True)
-        if target:
-            embed.add_field(name="Target", value=f"{target} (ID: {target.id})", inline=True)
-        embed.add_field(name="Reason", value=reason, inline=False)
-        if duration:
-            embed.add_field(name="Duration", value=duration, inline=True)
-        embed.set_footer(text=f"Guild: {guild.name} (ID: {guild.id})")
-
-        await channel.send(embed=embed)
-    except Exception as ex:
-        bot.logger.warning(f"Failed to log moderation action: {ex}")
-
-
-async def log_channel_action(
-    bot: commands.Bot,
-    guild: discord.Guild,
-    action: str,
-    executor: discord.Member,
-    channel: discord.TextChannel,
-    reason: str
-):
-    """
-    Logs a channel-related moderation action (lock/unlock) to the mod log channel.
-    """
-    try:
-        log_ch_id = await bot.database.get_mod_log_channel(guild.id)
-        if not log_ch_id:
-            return
-        log_ch = guild.get_channel(log_ch_id)
-        if not log_ch:
-            return
-
-        e = discord.Embed(title=action, color=discord.Color.gold(), timestamp=datetime.utcnow())
-        e.add_field(name="Executor", value=f"{executor} (ID: {executor.id})", inline=True)
-        e.add_field(name="Channel", value=f"{channel.mention} (ID: {channel.id})", inline=True)
-        e.add_field(name="Reason", value=reason, inline=False)
-        e.set_footer(text=f"Guild: {guild.name} (ID: {guild.id})")
-
-        await log_ch.send(embed=e)
-    except Exception as ex:
-        bot.logger.warning(f"Failed to log channel action: {ex}")
-
-
-#
-# Expiration Checker
-#
-def is_warning_expired(timestamp_val: int, days: int = 2) -> bool:
-    dt = datetime.utcfromtimestamp(timestamp_val)
-    return (datetime.utcnow() - dt) > timedelta(days=days)
-
-#
-# Paginated View for Warnings
-#
-class WarningsView(discord.ui.View):
-    def __init__(self, warnings, user, per_page=7):
-        super().__init__(timeout=180)
-        self.warnings = warnings
-        self.user = user
-        self.per_page = per_page
-        self.current_page = 0
-        self.total_pages = math.ceil(len(warnings) / per_page)
-
-        self.prev_btn = discord.ui.Button(label="Previous", style=discord.ButtonStyle.blurple, disabled=True)
-        self.next_btn = discord.ui.Button(label="Next", style=discord.ButtonStyle.blurple, disabled=(self.total_pages <= 1))
-        self.prev_btn.callback = self.previous_page
-        self.next_btn.callback = self.next_page
-        self.add_item(self.prev_btn)
-        self.add_item(self.next_btn)
-
-    def create_embed(self) -> discord.Embed:
-        start = self.current_page * self.per_page
-        end = start + self.per_page
-        embed = discord.Embed(
-            title=f"Warnings for {self.user}",
-            color=0xFF0000,
-            description=f"Page {self.current_page + 1}/{self.total_pages}",
-            timestamp=datetime.utcnow(),
+        
+        # Raise with more specific error message
+        raise app_commands.MissingPermissions(['moderator'])
+    except app_commands.MissingPermissions:
+        raise
+    except Exception as e:
+        interaction.client.logger.error(
+            f"Permission check error in is_moderator: {str(e)} | "
+            f"User: {interaction.user} ({interaction.user.id}) | "
+            f"Guild: {interaction.guild.name} ({interaction.guild.id})"
         )
-        for warn in self.warnings[start:end]:
-            mod_id = warn[2]
-            reason = warn[3]
-            ts = int(warn[4])
-            warn_id = warn[5]
-            embed.add_field(
-                name=f"Warn ID: {warn_id}",
-                value=(
-                    f"**Reason:** {reason}\n"
-                    f"**Moderator:** <@{mod_id}>\n"
-                    f"**Date:** <t:{ts}:F>"
-                ),
-                inline=False,
-            )
-        return embed
+        raise
 
-    async def previous_page(self, interaction: discord.Interaction):
-        if self.current_page > 0:
-            self.current_page -= 1
-            self.update_buttons()
-            await interaction.response.edit_message(embed=self.create_embed(), view=self)
-
-    async def next_page(self, interaction: discord.Interaction):
-        if self.current_page < self.total_pages - 1:
-            self.current_page += 1
-            self.update_buttons()
-            await interaction.response.edit_message(embed=self.create_embed(), view=self)
-
-    def update_buttons(self):
-        self.prev_btn.disabled = (self.current_page == 0)
-        self.next_btn.disabled = (self.current_page >= self.total_pages - 1)
-
+class ModCommandError(Exception):
+    """Custom exception for moderation command errors"""
+    def __init__(self, message: str, error_type: str = "Error", context: dict = None):
+        super().__init__(message)
+        self.error_type = error_type
+        self.context = context or {}
 
 class Moderation(commands.Cog, name="moderation"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.global_ban_lock = asyncio.Lock()
+        self.logger = logging.getLogger('moderation')
 
     async def cog_load(self):
         self.db = self.bot.database
         if not self.db:
-            self.bot.logger.error("DatabaseManager is not initialized in the bot.")
+            self.logger.error("DatabaseManager is not initialized in the bot.")
             raise ValueError("DatabaseManager is not initialized.")
         if not hasattr(self.bot, 'owner_id'):
             app_info = await self.bot.application_info()
             self.bot.owner_id = app_info.owner.id
-        self.bot.logger.info("Moderation Cog loaded successfully.")
+        self.logger.info("Moderation Cog loaded successfully.")
+
+    async def handle_mod_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        command_name: str,
+        context: dict = None
+    ) -> None:
+        """Handle errors for moderation commands with detailed logging"""
+        error_data = {
+            "command": command_name,
+            "error": str(error),
+            "error_type": type(error).__name__,
+            "user_id": interaction.user.id,
+            "guild_id": interaction.guild.id if interaction.guild else None,
+            "timestamp": datetime.utcnow().isoformat(),
+            "context": context or {}
+        }
+
+        # Add user roles and permissions to error data
+        if interaction.guild:
+            error_data.update({
+                "user_roles": [f"{role.name} ({role.id})" for role in interaction.user.roles],
+                "user_permissions": [
+                    perm[0] for perm, value in interaction.user.guild_permissions if value
+                ]
+            })
+
+        # Log to database
+        try:
+            await self.bot.database.log_command(error_data)
+        except Exception as e:
+            self.logger.error(f"Failed to log moderation error to database: {str(e)}")
+
+        # Log to console
+        self.logger.error(
+            f"Moderation error in {command_name} | "
+            f"User: {interaction.user} ({interaction.user.id}) | "
+            f"Guild: {interaction.guild.name if interaction.guild else 'DM'} | "
+            f"Error: {str(error)}"
+        )
+
+        # Create error embed
+        embed = discord.Embed(
+            title=f"❌ {command_name.title()} Error",
+            color=discord.Color.red(),
+            timestamp=datetime.utcnow()
+        )
+
+        # Handle different error types
+        if isinstance(error, app_commands.MissingPermissions):
+            embed.description = (
+                "You don't have the required permissions for this command.\n\n"
+                f"**Required:** {', '.join(error.missing_permissions)}\n"
+                f"**Your Roles:** {', '.join(r.name for r in interaction.user.roles)}"
+            )
+            embed.add_field(
+                name="How to Fix",
+                value="Contact a server administrator to get the necessary roles or permissions.",
+                inline=False
+            )
+        elif isinstance(error, discord.Forbidden):
+            embed.description = (
+                "I don't have the required permissions to perform this action.\n"
+                "Please check my role permissions and try again."
+            )
+            embed.add_field(
+                name="How to Fix",
+                value=(
+                    "1. Check my role position in the server settings\n"
+                    "2. Ensure I have the necessary permissions\n"
+                    "3. Try the command again"
+                ),
+                inline=False
+            )
+        elif isinstance(error, ModCommandError):
+            embed.title = f"❌ {error.error_type}"
+            embed.description = str(error)
+            if error.context:
+                embed.add_field(
+                    name="Additional Information",
+                    value="\n".join(f"**{k}:** {v}" for k, v in error.context.items()),
+                    inline=False
+                )
+        else:
+            embed.description = f"An unexpected error occurred:\n```{str(error)}```"
+            embed.add_field(
+                name="What to do?",
+                value=(
+                    "• Try the command again\n"
+                    "• Check if all parameters are correct\n"
+                    "• Contact a server administrator if the issue persists"
+                ),
+                inline=False
+            )
+
+        # Add error context
+        embed.add_field(
+            name="Context",
+            value=(
+                f"**Command:** /{command_name}\n"
+                f"**User:** {interaction.user.mention} ({interaction.user.id})\n"
+                f"**Channel:** {interaction.channel.mention if interaction.channel else 'DM'}\n"
+                f"**Time:** <t:{int(datetime.utcnow().timestamp())}:F>"
+            ),
+            inline=False
+        )
+
+        # Send error message
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except discord.HTTPException:
+            # Fallback to simple message if embed fails
+            await interaction.followup.send(
+                f"Error in {command_name}: {str(error)}",
+                ephemeral=True
+            )
+
+    #
+    # Logging
+    #
+    async def log_moderation_action(
+        self,
+        guild: discord.Guild,
+        action: str,
+        executor: discord.Member,
+        target: Union[discord.Member, discord.User, None],
+        reason: str,
+        duration: Optional[str] = None
+    ):
+        """
+        Logs a moderation action (ban, unban, kick, global_ban, etc.) to the set mod log channel.
+        """
+        try:
+            log_ch_id = await self.db.get_mod_log_channel(guild.id)
+            if not log_ch_id:
+                return
+            channel = guild.get_channel(log_ch_id)
+            if not channel:
+                return
+
+            embed = discord.Embed(
+                title=action,
+                color=discord.Color.gold(),
+                timestamp=datetime.utcnow()
+            )
+            embed.add_field(name="Executor", value=f"{executor} (ID: {executor.id})", inline=True)
+            if target:
+                embed.add_field(name="Target", value=f"{target} (ID: {target.id})", inline=True)
+            embed.add_field(name="Reason", value=reason, inline=False)
+            if duration:
+                embed.add_field(name="Duration", value=duration, inline=True)
+            embed.set_footer(text=f"Guild: {guild.name} (ID: {guild.id})")
+
+            await channel.send(embed=embed)
+        except Exception as ex:
+            self.logger.warning(f"Failed to log moderation action: {ex}")
+
+
+    async def log_channel_action(
+        self,
+        guild: discord.Guild,
+        action: str,
+        executor: discord.Member,
+        channel: discord.TextChannel,
+        reason: str
+    ):
+        """
+        Logs a channel-related moderation action (lock/unlock) to the mod log channel.
+        """
+        try:
+            log_ch_id = await self.db.get_mod_log_channel(guild.id)
+            if not log_ch_id:
+                return
+            log_ch = guild.get_channel(log_ch_id)
+            if not log_ch:
+                return
+
+            e = discord.Embed(title=action, color=discord.Color.gold(), timestamp=datetime.utcnow())
+            e.add_field(name="Executor", value=f"{executor} (ID: {executor.id})", inline=True)
+            e.add_field(name="Channel", value=f"{channel.mention} (ID: {channel.id})", inline=True)
+            e.add_field(name="Reason", value=reason, inline=False)
+            e.set_footer(text=f"Guild: {guild.name} (ID: {guild.id})")
+
+            await log_ch.send(embed=e)
+        except Exception as ex:
+            self.logger.warning(f"Failed to log channel action: {ex}")
+
+
+    #
+    # Expiration Checker
+    #
+    def is_warning_expired(self, timestamp_val: int, days: int = 2) -> bool:
+        dt = datetime.utcfromtimestamp(timestamp_val)
+        return (datetime.utcnow() - dt) > timedelta(days=days)
+
+    #
+    # Paginated View for Warnings
+    #
+    class WarningsView(discord.ui.View):
+        def __init__(self, warnings, user, per_page=7):
+            super().__init__(timeout=180)
+            self.warnings = warnings
+            self.user = user
+            self.per_page = per_page
+            self.current_page = 0
+            self.total_pages = math.ceil(len(warnings) / per_page)
+
+            self.prev_btn = discord.ui.Button(label="Previous", style=discord.ButtonStyle.blurple, disabled=True)
+            self.next_btn = discord.ui.Button(label="Next", style=discord.ButtonStyle.blurple, disabled=(self.total_pages <= 1))
+            self.prev_btn.callback = self.previous_page
+            self.next_btn.callback = self.next_page
+            self.add_item(self.prev_btn)
+            self.add_item(self.next_btn)
+
+        def create_embed(self) -> discord.Embed:
+            start = self.current_page * self.per_page
+            end = start + self.per_page
+            embed = discord.Embed(
+                title=f"Warnings for {self.user}",
+                color=0xFF0000,
+                description=f"Page {self.current_page + 1}/{self.total_pages}",
+                timestamp=datetime.utcnow(),
+            )
+            for warn in self.warnings[start:end]:
+                mod_id = warn[2]
+                reason = warn[3]
+                ts = int(warn[4])
+                warn_id = warn[5]
+                embed.add_field(
+                    name=f"Warn ID: {warn_id}",
+                    value=(
+                        f"**Reason:** {reason}\n"
+                        f"**Moderator:** <@{mod_id}>\n"
+                        f"**Date:** <t:{ts}:F>"
+                    ),
+                    inline=False,
+                )
+            return embed
+
+        async def previous_page(self, interaction: discord.Interaction):
+            if self.current_page > 0:
+                self.current_page -= 1
+                self.update_buttons()
+                await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
+        async def next_page(self, interaction: discord.Interaction):
+            if self.current_page < self.total_pages - 1:
+                self.current_page += 1
+                self.update_buttons()
+                await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
+        def update_buttons(self):
+            self.prev_btn.disabled = (self.current_page == 0)
+            self.next_btn.disabled = (self.current_page >= self.total_pages - 1)
+
 
     #
     # --------------- /ban Command (Local or Global) ---------------
@@ -263,7 +441,7 @@ class Moderation(commands.Cog, name="moderation"):
                                     r2_json = await r2.json()
                                     roblox_username = r2_json.get("name", "Unknown")
                 except Exception as e:
-                    self.bot.logger.warning(f"Bloxlink error: {e}")
+                    self.logger.warning(f"Bloxlink error: {e}")
 
             # DB write for global ban
             async with self.global_ban_lock:
@@ -334,8 +512,7 @@ class Moderation(commands.Cog, name="moderation"):
             await interaction.followup.send(embed=e_done, ephemeral=True)
 
             # log
-            await log_moderation_action(
-                self.bot,
+            await self.log_moderation_action(
                 interaction.guild,
                 "Global Ban",
                 interaction.user,
@@ -374,8 +551,7 @@ class Moderation(commands.Cog, name="moderation"):
             )
             await interaction.followup.send(embed=e_done, ephemeral=True)
 
-            await log_moderation_action(
-                self.bot,
+            await self.log_moderation_action(
                 interaction.guild,
                 "Ban",
                 interaction.user,
@@ -445,8 +621,7 @@ class Moderation(commands.Cog, name="moderation"):
             await interaction.followup.send(embed=e_done, ephemeral=True)
 
             # log
-            await log_moderation_action(
-                self.bot,
+            await self.log_moderation_action(
                 guild,
                 "Unban",
                 interaction.user,
@@ -465,6 +640,10 @@ class Moderation(commands.Cog, name="moderation"):
     # parse_duration
     #
     def parse_duration(self, s: str) -> Optional[int]:
+        """
+        e.g. 10m -> 600 secs, 2h -> 7200 secs, 1d -> 86400 secs.
+        Returns None if invalid.
+        """
         pat = re.compile(r'^(\d+)([mhd])$', re.IGNORECASE)
         match = pat.match(s)
         if not match:
@@ -490,12 +669,12 @@ class Moderation(commands.Cog, name="moderation"):
         try:
             all_warns = await self.db.get_warnings(user.id, interaction.guild.id)
             if not show_expired:
-                all_warns = [w for w in all_warns if not is_warning_expired(int(w[4]))]
+                all_warns = [w for w in all_warns if not self.is_warning_expired(int(w[4]))]
             if not all_warns:
                 e = discord.Embed(description=f"No warnings found for {user.mention}.", color=discord.Color.green())
                 return await interaction.followup.send(embed=e, ephemeral=True)
 
-            view = WarningsView(all_warns, user)
+            view = self.WarningsView(all_warns, user)
             await interaction.followup.send(embed=view.create_embed(), view=view, ephemeral=True)
         except Exception as ex:
             e = discord.Embed(description=f"❌ Error retrieving warnings: {ex}", color=discord.Color.red())
@@ -521,8 +700,12 @@ class Moderation(commands.Cog, name="moderation"):
             await interaction.followup.send(embed=e, ephemeral=True)
 
             # Log
-            await log_moderation_action(
-                self.bot, interaction.guild, "Kick", interaction.user, member, reason
+            await self.log_moderation_action(
+                interaction.guild,
+                "Kick",
+                interaction.user,
+                member,
+                reason
             )
 
         except discord.Forbidden:
@@ -557,8 +740,13 @@ class Moderation(commands.Cog, name="moderation"):
             await interaction.followup.send(embed=e, ephemeral=True)
 
             # Log
-            await log_moderation_action(
-                self.bot, interaction.guild, "Timeout", interaction.user, member, reason, duration
+            await self.log_moderation_action(
+                interaction.guild,
+                "Timeout",
+                interaction.user,
+                member,
+                reason,
+                duration
             )
 
         except ValueError as ve:
@@ -620,7 +808,13 @@ class Moderation(commands.Cog, name="moderation"):
             await interaction.followup.send(embed=e, ephemeral=True)
 
             # Log
-            await log_channel_action(self.bot, interaction.guild, "Lock", interaction.user, channel, reason)
+            await self.log_channel_action(
+                interaction.guild,
+                "Lock",
+                interaction.user,
+                channel,
+                reason
+            )
 
         except discord.Forbidden:
             e = discord.Embed(description="❌ I lack permissions to lock this channel.", color=discord.Color.red())
@@ -675,7 +869,13 @@ class Moderation(commands.Cog, name="moderation"):
             await interaction.followup.send(embed=e, ephemeral=True)
 
             # Log
-            await log_channel_action(self.bot, interaction.guild, "Unlock", interaction.user, channel, reason)
+            await self.log_channel_action(
+                interaction.guild,
+                "Unlock",
+                interaction.user,
+                channel,
+                reason
+            )
 
         except discord.Forbidden:
             e = discord.Embed(description="❌ No permission to unlock this channel.", color=discord.Color.red())
@@ -840,8 +1040,11 @@ class Moderation(commands.Cog, name="moderation"):
         try:
             doc = await self.db.get_case(interaction.guild.id, case_id)
             if not doc:
-                e = discord.Embed(title="Case Not Found", description=f"No case with ID **{case_id}**.", color=0xFF0000)
-                return await interaction.followup.send(embed=e, ephemeral=True)
+                raise ModCommandError(
+                    f"No case found with ID {case_id}",
+                    error_type="Case Not Found",
+                    context={"case_id": case_id}
+                )
 
             user_id = doc["user_id"]
             mod_id = doc["moderator_id"]
@@ -883,40 +1086,255 @@ class Moderation(commands.Cog, name="moderation"):
             if "duration" in extra and extra["duration"]:
                 embed.add_field(name="Duration", value=str(extra["duration"]), inline=True)
 
+            # Log successful case lookup
+            log_data = {
+                "command": "case",
+                "case_id": case_id,
+                "user_id": interaction.user.id,
+                "guild_id": interaction.guild.id,
+                "timestamp": datetime.utcnow().isoformat(),
+                "success": True,
+                "target_user_id": user_id,
+                "action_type": action_type
+            }
+            try:
+                await self.bot.database.log_command(log_data)
+            except Exception as e:
+                self.logger.error(f"Failed to log successful case lookup: {str(e)}")
+
             await interaction.followup.send(embed=embed, ephemeral=True)
 
+        except ModCommandError as ex:
+            await self.handle_mod_error(interaction, ex, "case", {"case_id": case_id})
         except Exception as ex:
-            err = discord.Embed(
-                title="Error",
-                description=f"Error fetching case {case_id}: {ex}",
-                color=discord.Color.red()
+            await self.handle_mod_error(
+                interaction,
+                ex,
+                "case",
+                {
+                    "case_id": case_id,
+                    "guild_id": interaction.guild.id,
+                    "user_id": interaction.user.id
+                }
             )
-            await interaction.followup.send(embed=err, ephemeral=True)
 
     #
     # --------------- Error Handling ---------------
     #
     @commands.Cog.listener()
     async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        # Create error log entry
+        log_data = {
+            "command": interaction.command.name if interaction.command else "Unknown",
+            "full_command": str(interaction.data) if interaction.data else "Unknown",
+            "user_id": interaction.user.id,
+            "user_name": str(interaction.user),
+            "channel_id": interaction.channel.id if interaction.channel else None,
+            "channel_name": interaction.channel.name if interaction.channel else "DM",
+            "guild_id": interaction.guild.id if interaction.guild else None,
+            "guild_name": interaction.guild.name if interaction.guild else "DM",
+            "timestamp": datetime.utcnow().isoformat(),
+            "error": str(error),
+            "error_type": type(error).__name__
+        }
+
+        if interaction.guild:
+            log_data.update({
+                "roles": [f"{role.name} ({role.id})" for role in interaction.user.roles],
+                "permissions": [perm[0] for perm, value in interaction.user.guild_permissions if value],
+                "is_admin": interaction.user.guild_permissions.administrator
+            })
+
+        # Log to database
+        try:
+            await self.bot.database.log_command(log_data)
+        except Exception as e:
+            self.logger.error(f"Failed to log command error to database: {str(e)}")
+
+        # Create error embed
         e = discord.Embed(
-            title="❌ Error",
-            description="An error occurred while processing the command.",
+            title="❌ Command Error",
             color=discord.Color.red(),
             timestamp=datetime.utcnow()
         )
-        if isinstance(error, app_commands.MissingPermissions):
-            e.description = "You do not have the required permissions."
-        elif isinstance(error, app_commands.CommandInvokeError):
-            e.description = "An error occurred while executing that command."
-            self.bot.logger.error(f"CommandInvokeError: {error}")
-        else:
-            self.bot.logger.error(f"Unhandled error in command {interaction.command}: {error}")
-            e.description = str(error)
 
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=e, ephemeral=True)
+        # Handle specific error types
+        if isinstance(error, app_commands.MissingPermissions):
+            # Get allowed roles for moderation if this is a moderation command
+            allowed_roles_str = ""
+            if interaction.command and interaction.command.parent and interaction.command.parent.name == "moderation":
+                try:
+                    allowed_roles = await self.bot.database.get_moderation_allowed_roles(interaction.guild.id)
+                    role_names = []
+                    for role_id in allowed_roles:
+                        role = interaction.guild.get_role(role_id)
+                        if role:
+                            role_names.append(role.name)
+                    if role_names:
+                        allowed_roles_str = f"\n**Allowed Roles:** {', '.join(role_names)}"
+                except Exception:
+                    pass
+
+            e.description = (
+                "You don't have permission to use this command.\n\n"
+                f"**Required:** Administrator or Moderator role{allowed_roles_str}\n"
+                f"**Your Roles:** {', '.join(r.name for r in interaction.user.roles[1:]) or 'None'}"
+            )
+            e.add_field(
+                name="How to Fix",
+                value="Contact a server administrator to get the necessary roles or permissions.",
+                inline=False
+            )
+            self.logger.warning(
+                f"Permission denied for {interaction.command.name} | "
+                f"User: {interaction.user} ({interaction.user.id}) | "
+                f"Guild: {interaction.guild.name} ({interaction.guild.id})"
+            )
+        elif isinstance(error, app_commands.CommandInvokeError):
+            if isinstance(error.original, discord.Forbidden):
+                e.description = (
+                    "I don't have the required permissions to perform this action.\n"
+                    "Please check my role permissions and try again."
+                )
+                e.add_field(
+                    name="How to Fix",
+                    value=(
+                        "1. Check my role position in the server settings\n"
+                        "2. Ensure I have the necessary permissions\n"
+                        "3. Try the command again"
+                    ),
+                    inline=False
+                )
+                self.logger.error(
+                    f"Bot missing permissions for {interaction.command.name} | "
+                    f"Guild: {interaction.guild.name} ({interaction.guild.id})"
+                )
+            else:
+                e.description = (
+                    "An error occurred while executing the command.\n"
+                    f"```{str(error.original)}```"
+                )
+                e.add_field(
+                    name="What to do?",
+                    value=(
+                        "• Try the command again\n"
+                        "• Check if all parameters are correct\n"
+                        "• Contact a server administrator if the issue persists"
+                    ),
+                    inline=False
+                )
+                self.logger.error(
+                    f"Error in {interaction.command.name}: {str(error.original)} | "
+                    f"User: {interaction.user} ({interaction.user.id}) | "
+                    f"Guild: {interaction.guild.name} ({interaction.guild.id})"
+                )
         else:
-            await interaction.response.send_message(embed=e, ephemeral=True)
+            e.description = str(error)
+            e.add_field(
+                name="What to do?",
+                value=(
+                    "• Try the command again\n"
+                    "• Check if all parameters are correct\n"
+                    "• Contact a server administrator if the issue persists"
+                ),
+                inline=False
+            )
+            self.logger.error(
+                f"Unhandled error in {interaction.command.name}: {error} | "
+                f"User: {interaction.user} ({interaction.user.id}) | "
+                f"Guild: {interaction.guild.name if interaction.guild else 'DM'}"
+            )
+
+        # Add error context to embed
+        e.add_field(
+            name="Context",
+            value=(
+                f"**Command:** /{interaction.command.name if interaction.command else 'Unknown'}\n"
+                f"**User:** {interaction.user.mention} ({interaction.user.id})\n"
+                f"**Channel:** {interaction.channel.mention if interaction.channel else 'DM'}\n"
+                f"**Time:** <t:{int(datetime.utcnow().timestamp())}:F>"
+            ),
+            inline=False
+        )
+
+        # Send error message
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=e, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=e, ephemeral=True)
+        except discord.HTTPException:
+            # If we can't send the fancy embed, try to send a simple message
+            simple_error = (
+                f"Error in command {interaction.command.name if interaction.command else 'Unknown'}: {str(error)}"
+            )
+            if interaction.response.is_done():
+                await interaction.followup.send(simple_error, ephemeral=True)
+            else:
+                await interaction.response.send_message(simple_error, ephemeral=True)
+
+    #
+    # --------------- Case Error Handling ---------------
+    #
+    async def handle_case_error(self, interaction: discord.Interaction, case_id: str, error: Exception) -> None:
+        """Handle errors specifically for case-related commands"""
+        error_data = {
+            "command": "case",
+            "case_id": case_id,
+            "error": str(error),
+            "error_type": type(error).__name__,
+            "user_id": interaction.user.id,
+            "guild_id": interaction.guild.id if interaction.guild else None,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+        # Log to database
+        try:
+            await self.bot.database.log_command(error_data)
+        except Exception as e:
+            self.logger.error(f"Failed to log case error to database: {str(e)}")
+
+        # Log to console
+        self.logger.error(
+            f"Case lookup error | Case: {case_id} | "
+            f"User: {interaction.user} ({interaction.user.id}) | "
+            f"Guild: {interaction.guild.name if interaction.guild else 'DM'} | "
+            f"Error: {str(error)}"
+        )
+
+        # Create error embed
+        embed = discord.Embed(
+            title="❌ Case Lookup Error",
+            description=(
+                f"An error occurred while looking up case `{case_id}`:\n"
+                f"```{str(error)}```"
+            ),
+            color=discord.Color.red(),
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(
+            name="What to do?",
+            value=(
+                "• Check if the case ID is correct\n"
+                "• Verify the case exists in this server\n"
+                "• Try again later or contact an administrator"
+            ),
+            inline=False
+        )
+        embed.set_footer(text=f"Error Type: {type(error).__name__}")
+
+        # Send error message
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except discord.HTTPException:
+            # Fallback to simple message if embed fails
+            await interaction.followup.send(
+                f"Error looking up case {case_id}: {str(error)}",
+                ephemeral=True
+            )
 
     #
     # Utility: parse_duration
