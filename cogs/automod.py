@@ -256,6 +256,10 @@ class AutoMod(commands.Cog):
                 automod_mute_duration = server_settings.get('automod_mute_duration', 3600)
                 duration = timedelta(seconds=automod_mute_duration)
                 try:
+                    # First apply the timeout
+                    await message.author.timeout(duration, reason="Mentioned a protected user without required roles")
+                    
+                    # Then handle the violation
                     await self.handle_message_violation(
                         message,
                         reason="Mentioned a protected user without required roles.",
