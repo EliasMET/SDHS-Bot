@@ -73,9 +73,11 @@ class PaginatedDropdownView(discord.ui.View):
         # Generate a voice channel invite link if the user is in a voice channel
         voice_channel = interaction.user.voice.channel if interaction.user.voice else None
         vc_display = ""
+        voice_invite = None
         if voice_channel:
             invite = await voice_channel.create_invite(max_age=43200)  # 12 hours in seconds
             vc_display = invite.url
+            voice_invite = invite.url
 
         # Add one empty line between requirements and status
         # Bold the event name after [DIVISION]
@@ -95,10 +97,26 @@ class PaginatedDropdownView(discord.ui.View):
         channel = self.bot.get_channel(self.channel_id)
         if channel:
             try:
-                await channel.send(tryout_message)
+                message = await channel.send(tryout_message)
+                
+                # Log the tryout session
+                session_id = await self.bot.database.create_tryout_session(
+                    guild_id=guild_id,
+                    host_id=self.user.id,
+                    group_id=selected_group_id,
+                    group_name=group_info['event_name'],
+                    channel_id=self.channel_id,
+                    voice_channel_id=voice_channel.id if voice_channel else None,
+                    lock_timestamp=lock_timestamp.isoformat(),
+                    requirements=reqs,
+                    description=group_info['description'],
+                    message_id=message.id,
+                    voice_invite=voice_invite
+                )
+
                 confirmation_embed = discord.Embed(
                     title="Success",
-                    description=f"The tryout announcement for **{group_info['event_name']}** has been sent!",
+                    description=f"The tryout announcement for **{group_info['event_name']}** has been sent!\nSession ID: `{session_id}`",
                     color=0x00FF00,
                 )
                 await interaction.followup.edit_message(
@@ -107,17 +125,17 @@ class PaginatedDropdownView(discord.ui.View):
                     view=None
                 )
                 logger.info(
-                    f"Tryout announcement for '{group_info['event_name']}' sent by {self.user} (ID: {self.user.id}) in guild {guild_id}."
+                    f"Tryout session {session_id} created for '{group_info['event_name']}' by {self.user} (ID: {self.user.id}) in guild {guild_id}."
                 )
             except Exception as e:
                 logger.error(
-                    f"Failed to send tryout announcement for '{group_info['event_name']}' by {self.user} (ID: {self.user.id}) "
+                    f"Failed to create tryout session for '{group_info['event_name']}' by {self.user} (ID: {self.user.id}) "
                     f"to channel {self.channel_id} in guild {guild_id}: {e}",
                     exc_info=True
                 )
                 error_embed = discord.Embed(
                     title="Error",
-                    description="An unexpected error occurred while sending the tryout announcement.",
+                    description="An unexpected error occurred while creating the tryout session.",
                     color=0xFF0000,
                 )
                 await interaction.followup.edit_message(
@@ -354,15 +372,32 @@ class Tryout(commands.Cog, name="tryout"):
                     channel = self.bot.get_channel(channel_id)
                     if channel:
                         try:
-                            await channel.send(tryout_message)
+                            message = await channel.send(tryout_message)
+                            
+                            # Create tryout session
+                            session_id = await self.db.create_tryout_session(
+                                guild_id=guild_id,
+                                host_id=interaction.user.id,
+                                group_id=selected_group_id,
+                                group_name=group_info['event_name'],
+                                channel_id=channel_id,
+                                voice_channel_id=user_vc.id if user_vc else None,
+                                lock_timestamp=lock_timestamp.isoformat(),
+                                requirements=reqs,
+                                description=group_info['description'],
+                                message_id=message.id,
+                                voice_invite=vc_display if user_vc else None
+                            )
+
                             confirmation_embed = discord.Embed(
                                 title="Success",
-                                description=f"The tryout for **{group_info['event_name']}** has been announced!",
+                                description=f"The tryout for **{group_info['event_name']}** has been announced!\nSession ID: `{session_id}`",
                                 color=0x00FF00,
                             )
                             await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
                             logger.info(
-                                f"Tryout announced for event '{group_info['event_name']}' by {interaction.user} (ID: {interaction.user.id}) in guild {guild_id}."
+                                f"Tryout session {session_id} created for '{group_info['event_name']}' by {interaction.user} "
+                                f"(ID: {interaction.user.id}) in guild {guild_id}."
                             )
                         except Exception as e:
                             logger.error(

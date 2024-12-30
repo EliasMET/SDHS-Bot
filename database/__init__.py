@@ -11,27 +11,40 @@ class DatabaseManager:
         self.logger = logging.getLogger('DatabaseManager')
 
     async def initialize_database(self):
-        await self.db["warns"].create_index([("user_id", 1), ("server_id", 1)])
-        await self.db["server_data"].create_index([("server_id", 1)], unique=True)
+        """Initialize database with optimized collections and indexes"""
+        try:
+            # Create indexes for tryout tracking
+            await self.db["tryout_sessions"].create_index([("guild_id", 1)])
+            await self.db["tryout_sessions"].create_index([("host_id", 1)])
+            await self.db["tryout_sessions"].create_index([("group_id", 1)])
+            await self.db["tryout_sessions"].create_index([("status", 1)])
+            await self.db["tryout_sessions"].create_index([("created_at", -1)])
+            await self.db["tryout_sessions"].create_index([("lock_timestamp", 1)])
+            await self.db["tryout_sessions"].create_index([
+                ("guild_id", 1),
+                ("created_at", -1)
+            ])
 
-        # We use a compound unique index (server_id + case_id)
-        # so that each server can have distinct random case IDs.
-        await self.db["cases"].create_index(
-            [("server_id", 1), ("case_id", 1)],
-            unique=True
-        )
-        await self.db["gdpr_requests"].create_index([("request_id", 1)], unique=True)
-        await self.db["gdpr_requests"].create_index([("requester_id", 1)])
-        await self.db["gdpr_requests"].create_index([("target_user_id", 1)])
+            # Original indexes
+            await self.db["warns"].create_index([("user_id", 1), ("server_id", 1)])
+            await self.db["server_data"].create_index([("server_id", 1)], unique=True)
+            await self.db["cases"].create_index(
+                [("server_id", 1), ("case_id", 1)],
+                unique=True
+            )
+            await self.db["gdpr_requests"].create_index([("request_id", 1)], unique=True)
+            await self.db["gdpr_requests"].create_index([("requester_id", 1)])
+            await self.db["gdpr_requests"].create_index([("target_user_id", 1)])
+            await self.db["command_logs"].create_index([("timestamp", -1)])
+            await self.db["command_logs"].create_index([("user_id", 1)])
+            await self.db["command_logs"].create_index([("guild_id", 1)])
+            await self.db["command_logs"].create_index([("command", 1)])
+            await self.db["command_logs"].create_index([("success", 1)])
 
-        # Command logs indexes
-        await self.db["command_logs"].create_index([("timestamp", -1)])
-        await self.db["command_logs"].create_index([("user_id", 1)])
-        await self.db["command_logs"].create_index([("guild_id", 1)])
-        await self.db["command_logs"].create_index([("command", 1)])
-        await self.db["command_logs"].create_index([("success", 1)])
-        
-        self.logger.info("Database initialized.")
+            self.logger.info("Database initialized with all collections and indexes.")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize database: {e}")
+            raise
 
     #
     # ------------- WARN SYSTEM -------------
@@ -716,3 +729,192 @@ class DatabaseManager:
             {"timestamp": {"$lt": cutoff_date}}
         )
         return result.deleted_count
+
+    #
+    # ------------- TRYOUT TRACKING SYSTEM -------------
+    #
+    async def create_tryout_session(
+        self,
+        guild_id: int,
+        host_id: int,
+        group_id: str,
+        group_name: str,
+        channel_id: int,
+        voice_channel_id: int,
+        lock_timestamp: str,
+        requirements: list,
+        description: str,
+        message_id: int = None,
+        voice_invite: str = None
+    ) -> str:
+        """Create a new tryout session"""
+        session = {
+            "guild_id": str(guild_id),
+            "host_id": str(host_id),
+            "group_id": group_id,
+            "group_name": group_name,
+            "channel_id": str(channel_id),
+            "voice_channel_id": str(voice_channel_id),
+            "message_id": str(message_id) if message_id else None,
+            "voice_invite": voice_invite,
+            "requirements": requirements,
+            "description": description,
+            "created_at": datetime.utcnow().isoformat(),
+            "lock_timestamp": lock_timestamp,
+            "status": "active",
+            "ended_at": None,
+            "end_reason": None,
+            "participants": [],
+            "accepted_participants": [],
+            "rejected_participants": [],
+            "notes": []
+        }
+        
+        result = await self.db["tryout_sessions"].insert_one(session)
+        return str(result.inserted_id)
+
+    async def get_tryout_session(self, session_id: str) -> dict:
+        """Get a tryout session by its ID"""
+        return await self.db["tryout_sessions"].find_one({"_id": session_id})
+
+    async def get_active_tryout_sessions(self, guild_id: int) -> list:
+        """Get all active tryout sessions for a guild"""
+        return await self.db["tryout_sessions"].find({
+            "guild_id": str(guild_id),
+            "status": "active"
+        }).sort("created_at", -1).to_list(None)
+
+    async def get_host_tryout_sessions(self, guild_id: int, host_id: int) -> list:
+        """Get all tryout sessions hosted by a specific user in a guild"""
+        return await self.db["tryout_sessions"].find({
+            "guild_id": str(guild_id),
+            "host_id": str(host_id)
+        }).sort("created_at", -1).to_list(None)
+
+    async def end_tryout_session(
+        self,
+        session_id: str,
+        end_reason: str = "completed"
+    ) -> bool:
+        """End a tryout session"""
+        result = await self.db["tryout_sessions"].update_one(
+            {"_id": session_id},
+            {
+                "$set": {
+                    "status": "ended",
+                    "ended_at": datetime.utcnow().isoformat(),
+                    "end_reason": end_reason
+                }
+            }
+        )
+        return result.modified_count > 0
+
+    async def add_tryout_participant(
+        self,
+        session_id: str,
+        user_id: int,
+        roblox_id: str = None
+    ) -> bool:
+        """Add a participant to a tryout session"""
+        participant = {
+            "user_id": str(user_id),
+            "roblox_id": roblox_id,
+            "joined_at": datetime.utcnow().isoformat()
+        }
+        result = await self.db["tryout_sessions"].update_one(
+            {"_id": session_id},
+            {"$addToSet": {"participants": participant}}
+        )
+        return result.modified_count > 0
+
+    async def update_participant_status(
+        self,
+        session_id: str,
+        user_id: int,
+        status: str,  # "accepted" or "rejected"
+        reason: str = None
+    ) -> bool:
+        """Update a participant's status in a tryout session"""
+        participant = {
+            "user_id": str(user_id),
+            "status_updated_at": datetime.utcnow().isoformat(),
+            "reason": reason
+        }
+        
+        status_field = f"{status}_participants"
+        if status not in ["accepted", "rejected"]:
+            raise ValueError("Status must be either 'accepted' or 'rejected'")
+            
+        result = await self.db["tryout_sessions"].update_one(
+            {"_id": session_id},
+            {"$addToSet": {status_field: participant}}
+        )
+        return result.modified_count > 0
+
+    async def add_tryout_note(
+        self,
+        session_id: str,
+        author_id: int,
+        note: str
+    ) -> bool:
+        """Add a note to a tryout session"""
+        note_entry = {
+            "author_id": str(author_id),
+            "note": note,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        result = await self.db["tryout_sessions"].update_one(
+            {"_id": session_id},
+            {"$push": {"notes": note_entry}}
+        )
+        return result.modified_count > 0
+
+    async def get_tryout_stats(
+        self,
+        guild_id: int,
+        start_date: str = None,
+        end_date: str = None
+    ) -> dict:
+        """Get statistics about tryout sessions in a guild"""
+        match_query = {"guild_id": str(guild_id)}
+        if start_date:
+            match_query["created_at"] = {"$gte": start_date}
+        if end_date:
+            match_query.setdefault("created_at", {})["$lte"] = end_date
+
+        pipeline = [
+            {"$match": match_query},
+            {
+                "$group": {
+                    "_id": None,
+                    "total_sessions": {"$sum": 1},
+                    "active_sessions": {
+                        "$sum": {"$cond": [{"$eq": ["$status", "active"]}, 1, 0]}
+                    },
+                    "total_participants": {
+                        "$sum": {"$size": "$participants"}
+                    },
+                    "accepted_participants": {
+                        "$sum": {"$size": "$accepted_participants"}
+                    },
+                    "rejected_participants": {
+                        "$sum": {"$size": "$rejected_participants"}
+                    },
+                    "avg_session_duration": {
+                        "$avg": {
+                            "$cond": [
+                                {"$eq": ["$status", "ended"]},
+                                {"$subtract": [
+                                    {"$dateFromString": {"dateString": "$ended_at"}},
+                                    {"$dateFromString": {"dateString": "$created_at"}}
+                                ]},
+                                0
+                            ]
+                        }
+                    }
+                }
+            }
+        ]
+
+        results = await self.db["tryout_sessions"].aggregate(pipeline).to_list(None)
+        return results[0] if results else None
