@@ -2,11 +2,11 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import os
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('discord_bot')
 
 class PaginatedDropdownView(discord.ui.View):
     def __init__(self, groups, user, lock_time, group_settings, channel_id, bot, roblox_user_id, settings_cog, per_page=25):
@@ -115,8 +115,11 @@ class PaginatedDropdownView(discord.ui.View):
                 )
 
                 confirmation_embed = discord.Embed(
-                    title="Success",
-                    description=f"The tryout announcement for **{group_info['event_name']}** has been sent!\nSession ID: `{session_id}`",
+                    title="✅ Success",
+                    description=(
+                        f"🎯 The tryout announcement for **{group_info['event_name']}** has been sent!\n"
+                        f"📝 Session ID: `{session_id}`"
+                    ),
                     color=0x00FF00,
                 )
                 await interaction.followup.edit_message(
@@ -214,56 +217,65 @@ class Tryout(commands.Cog, name="tryout"):
         interaction: discord.Interaction,
         lock_time: int = 10,
     ) -> None:
-        bloxlink_api_key = os.getenv("BLOXLINK_TOKEN")
-        self.bot.guild_id = interaction.guild.id
-        guild_id = self.bot.guild_id
-        logger.info(
-            f"User {interaction.user} (ID: {interaction.user.id}) triggered /tryout in guild {guild_id} "
-            f"with lock_time={lock_time}."
-        )
-
-        # Check required roles
-        required_roles = await self.db.get_tryout_required_roles(interaction.guild.id)
-        user_roles = {role.id for role in interaction.user.roles}
-        if not set(required_roles).intersection(user_roles):
-            logger.warning(
-                f"User {interaction.user} (ID: {interaction.user.id}) does not have required roles for /tryout in guild {guild_id}."
-            )
-            embed = discord.Embed(title="Permission Denied", description="You lack the required roles.", color=0xFF0000)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Check if user is in allowed voice channel
-        allowed_vcs = await self.db.get_tryout_allowed_vcs(interaction.guild.id)
-        user_vc = interaction.user.voice.channel if interaction.user.voice else None
-        if not user_vc or user_vc.id not in allowed_vcs:
-            logger.warning(
-                f"User {interaction.user} (ID: {interaction.user.id}) is not in an allowed voice channel for /tryout in guild {guild_id}."
-            )
-            embed = discord.Embed(
-                title="Voice Channel Required",
-                description="You must be in one of the allowed voice channels to start a tryout.",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Defer response
+        """Announce a tryout."""
         await interaction.response.defer(ephemeral=True)
+        guild_id = interaction.guild.id
 
-        # Check tryout channel config
-        channel_id = await self.db.get_tryout_channel_id(interaction.guild.id)
-        if not channel_id:
-            logger.error(f"No tryout channel configured for guild {guild_id}.")
-            embed = discord.Embed(title="Config Error", description="Tryout channel not set.", color=0xFF0000)
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
+        try:
+            # Check if user has required roles
+            required_roles = await self.db.get_tryout_required_roles(guild_id)
+            if required_roles:
+                has_required_role = any(
+                    str(role.id) in map(str, required_roles)
+                    for role in interaction.user.roles
+                )
+                if not has_required_role:
+                    logger.warning(
+                        f"User {interaction.user} (ID: {interaction.user.id}) attempted /tryout without required roles in guild {guild_id}."
+                    )
+                    embed = discord.Embed(
+                        title="Permission Error",
+                        description="You don't have the required roles to use this command.",
+                        color=0xFF0000
+                    )
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                    return
 
-        async with aiohttp.ClientSession() as session:
-            try:
+            # Get the configured tryout channel
+            channel_id = await self.db.get_tryout_channel_id(guild_id)
+            if not channel_id:
+                logger.warning(
+                    f"No tryout channel configured in guild {guild_id}. "
+                    f"User {interaction.user} (ID: {interaction.user.id}) attempted /tryout."
+                )
+                embed = discord.Embed(
+                    title="Config Error",
+                    description="No tryout channel configured.",
+                    color=0xFF0000
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            # Check if user is in an allowed voice channel
+            user_vc = interaction.user.voice.channel if interaction.user.voice else None
+            allowed_vcs = await self.db.get_tryout_allowed_vcs(guild_id)
+            if allowed_vcs and (not user_vc or user_vc.id not in allowed_vcs):
+                logger.warning(
+                    f"User {interaction.user} (ID: {interaction.user.id}) attempted /tryout "
+                    f"without being in an allowed voice channel in guild {guild_id}."
+                )
+                embed = discord.Embed(
+                    title="Voice Channel Error",
+                    description="You must be in an allowed voice channel to use this command.",
+                    color=0xFF0000
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            async with aiohttp.ClientSession() as session:
                 user_id = interaction.user.id
                 bloxlink_url = f"https://api.blox.link/v4/public/guilds/{guild_id}/discord-to-roblox/{user_id}"
-                headers = {"Authorization": bloxlink_api_key}
+                headers = {"Authorization": os.getenv("BLOXLINK_TOKEN")}
 
                 logger.info(
                     f"Fetching Roblox ID from Bloxlink for user {interaction.user} (ID: {interaction.user.id}) in guild {guild_id} via {bloxlink_url}"
@@ -308,6 +320,7 @@ class Tryout(commands.Cog, name="tryout"):
                     await interaction.followup.send(embed=embed, ephemeral=True)
                     return
 
+                # Process groups and find matches
                 group_settings = {
                     str(g[0]): {
                         'description': g[1],
@@ -326,28 +339,35 @@ class Tryout(commands.Cog, name="tryout"):
                     logger.info(
                         f"No matching tryout groups found for user {interaction.user} (ID: {interaction.user.id}) in guild {guild_id}."
                     )
-                    embed = discord.Embed(title="Error", description="No matching group found.", color=0xFF0000)
+                    embed = discord.Embed(
+                        title="Error",
+                        description="No matching group found.",
+                        color=0xFF0000
+                    )
                     await interaction.followup.send(embed=embed, ephemeral=True)
                     return
 
-                logger.info(
-                    f"Found {len(matching_groups)} matching groups for /tryout triggered by {interaction.user} (ID: {interaction.user.id}) in guild {guild_id}."
-                )
+                # Get channel and verify it exists
+                channel = self.bot.get_channel(channel_id)
+                if not channel:
+                    logger.error(
+                        f"Configured tryout channel {channel_id} not found in guild {guild_id}. "
+                        f"User {interaction.user} (ID: {interaction.user.id}) tried announcing a tryout."
+                    )
+                    embed = discord.Embed(
+                        title="Error",
+                        description="Configured tryout channel not found. Please contact an administrator.",
+                        color=0xFF0000
+                    )
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                    return
 
-                # Fetch ping roles
-                ping_roles = await self.db.get_ping_roles(interaction.guild.id)
-                pings = " ".join(f"<@&{rid}>" for rid in ping_roles) if ping_roles else ""
-
-                # Generate a voice channel invite for the user's current VC
-                vc_display = ""
-                if user_vc:
-                    invite = await user_vc.create_invite(max_age=43200)  # 12 hours in seconds
-                    vc_display = invite.url
-
+                # Handle single group case
                 if len(matching_groups) == 1:
                     selected_group_id = next(iter(matching_groups.keys()))
                     group_info = matching_groups[selected_group_id]
 
+                    # Prepare message content
                     lock_timestamp = discord.utils.utcnow() + timedelta(minutes=lock_time)
                     lock_unix = int(lock_timestamp.timestamp())
                     lock_time_formatted = f"<t:{lock_unix}:R>"
@@ -355,7 +375,17 @@ class Tryout(commands.Cog, name="tryout"):
                     reqs = group_info["requirements"] if group_info.get("requirements") else []
                     req_text = "\n".join(reqs) if reqs else "None"
 
-                    # One empty line before [STATUS] and bold event name
+                    # Get ping roles
+                    ping_roles = await self.db.get_ping_roles(interaction.guild.id)
+                    pings = " ".join(f"<@&{rid}>" for rid in ping_roles) if ping_roles else ""
+
+                    # Generate voice channel invite
+                    vc_display = ""
+                    if user_vc:
+                        invite = await user_vc.create_invite(max_age=43200)  # 12 hours
+                        vc_display = invite.url
+
+                    # Create tryout message
                     tryout_message = (
                         f"[DIVISION] **{group_info['event_name']}**\n"
                         f"[HOST] {interaction.user.mention}\n"
@@ -363,71 +393,67 @@ class Tryout(commands.Cog, name="tryout"):
                         f"[INFO] {group_info['description']}\n"
                         f"[REQUIREMENTS]\n"
                         f"{req_text}\n"
-                        f"\n"  # Extra newline for empty line before STATUS
+                        f"\n"
                         f"[STATUS] Locking at {lock_time_formatted}\n"
                         f"{pings}\n"
                         f"{vc_display}"
                     )
 
-                    channel = self.bot.get_channel(channel_id)
-                    if channel:
-                        try:
-                            message = await channel.send(tryout_message)
-                            
-                            # Create tryout session
-                            session_id = await self.db.create_tryout_session(
-                                guild_id=guild_id,
-                                host_id=interaction.user.id,
-                                group_id=selected_group_id,
-                                group_name=group_info['event_name'],
-                                channel_id=channel_id,
-                                voice_channel_id=user_vc.id if user_vc else None,
-                                lock_timestamp=lock_timestamp.isoformat(),
-                                requirements=reqs,
-                                description=group_info['description'],
-                                message_id=message.id,
-                                voice_invite=vc_display if user_vc else None
-                            )
+                    try:
+                        # Send message and create session
+                        message = await channel.send(tryout_message)
+                        session_id = await self.db.create_tryout_session(
+                            guild_id=guild_id,
+                            host_id=interaction.user.id,
+                            group_id=selected_group_id,
+                            group_name=group_info['event_name'],
+                            channel_id=channel_id,
+                            voice_channel_id=user_vc.id if user_vc else None,
+                            lock_timestamp=lock_timestamp.isoformat(),
+                            requirements=reqs,
+                            description=group_info['description'],
+                            message_id=message.id,
+                            voice_invite=vc_display if user_vc else None
+                        )
 
-                            confirmation_embed = discord.Embed(
-                                title="Success",
-                                description=f"The tryout for **{group_info['event_name']}** has been announced!\nSession ID: `{session_id}`",
-                                color=0x00FF00,
-                            )
-                            await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
-                            logger.info(
-                                f"Tryout session {session_id} created for '{group_info['event_name']}' by {interaction.user} "
-                                f"(ID: {interaction.user.id}) in guild {guild_id}."
-                            )
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to send tryout announcement for '{group_info['event_name']}' by {interaction.user} (ID: {interaction.user.id}) "
-                                f"to channel {channel_id} in guild {guild_id}: {e}",
-                                exc_info=True
-                            )
-                            error_embed = discord.Embed(
-                                title="Error",
-                                description="An unexpected error occurred while sending the tryout announcement. Please check bot permissions and try again.",
-                                color=0xFF0000
-                            )
-                            await interaction.followup.send(embed=error_embed, ephemeral=True)
-                    else:
+                        # Send confirmation
+                        confirmation_embed = discord.Embed(
+                            title="✅ Success",
+                            description=(
+                                f"🎯 The tryout for **{group_info['event_name']}** has been announced!\n"
+                                f"📝 Session ID: `{session_id}`"
+                            ),
+                            color=0x00FF00,
+                        )
+                        await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
+                        logger.info(
+                            f"Tryout session {session_id} created for '{group_info['event_name']}' by {interaction.user} "
+                            f"(ID: {interaction.user.id}) in guild {guild_id}."
+                        )
+                    except Exception as e:
                         logger.error(
-                            f"Configured tryout channel {channel_id} not found in guild {guild_id}. "
-                            f"User {interaction.user} (ID: {interaction.user.id}) tried announcing a tryout."
+                            f"Failed to create tryout session for '{group_info['event_name']}' by {interaction.user} "
+                            f"(ID: {interaction.user.id}) in guild {guild_id}: {e}",
+                            exc_info=True
                         )
                         error_embed = discord.Embed(
                             title="Error",
-                            description="Configured tryout channel not found. Please contact an administrator.",
+                            description="An unexpected error occurred while creating the tryout session. Please try again.",
                             color=0xFF0000
                         )
                         await interaction.followup.send(embed=error_embed, ephemeral=True)
-
+                        return
                 else:
+                    # Handle multiple groups case
                     logger.info(
-                        f"Multiple ({len(matching_groups)}) matching tryout groups found for user {interaction.user} (ID: {interaction.user.id}) in guild {guild_id}. Presenting dropdown selection."
+                        f"Multiple ({len(matching_groups)}) matching groups found for user {interaction.user} "
+                        f"(ID: {interaction.user.id}) in guild {guild_id}. Presenting dropdown selection."
                     )
-                    embed = discord.Embed(title="Select Group", description="Select the group for this tryout.", color=0x00FF00)
+                    embed = discord.Embed(
+                        title="Select Group",
+                        description="Select the group for this tryout.",
+                        color=0x00FF00
+                    )
                     view = PaginatedDropdownView(
                         matching_groups,
                         interaction.user,
@@ -440,20 +466,21 @@ class Tryout(commands.Cog, name="tryout"):
                     )
                     view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-            except Exception as e:
-                logger.error(
-                    f"Unexpected error occurred during /tryout command for user {interaction.user} (ID: {interaction.user.id}) in guild {guild_id}: {e}",
-                    exc_info=True
-                )
-                error_embed = discord.Embed(
-                    title="Unexpected Error",
-                    description=(
-                        "An unexpected error occurred. Please try again later or contact an administrator.\n"
-                        f"Error: {type(e).__name__}: {e}"
-                    ),
-                    color=0xFF0000
-                )
-                await interaction.followup.send(embed=error_embed, ephemeral=True)
+        except Exception as e:
+            logger.error(
+                f"Unexpected error in /tryout command for user {interaction.user} (ID: {interaction.user.id}) "
+                f"in guild {guild_id}: {e}",
+                exc_info=True
+            )
+            error_embed = discord.Embed(
+                title="Unexpected Error",
+                description=(
+                    "An unexpected error occurred. Please try again later or contact an administrator.\n"
+                    f"Error: {type(e).__name__}: {e}"
+                ),
+                color=0xFF0000
+            )
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
 
 
 async def setup(bot) -> None:

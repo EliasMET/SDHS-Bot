@@ -4,6 +4,7 @@ import string
 from datetime import datetime, timedelta
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo.errors import DuplicateKeyError
+from typing import Optional
 
 class DatabaseManager:
     def __init__(self, *, db: AsyncIOMotorDatabase) -> None:
@@ -731,7 +732,7 @@ class DatabaseManager:
         return result.deleted_count
 
     #
-    # ------------- TRYOUT TRACKING SYSTEM -------------
+    # ------------- TRYOUT SESSIONS -------------
     #
     async def create_tryout_session(
         self,
@@ -740,42 +741,43 @@ class DatabaseManager:
         group_id: str,
         group_name: str,
         channel_id: int,
-        voice_channel_id: int,
+        voice_channel_id: Optional[int],
         lock_timestamp: str,
         requirements: list,
         description: str,
-        message_id: int = None,
-        voice_invite: str = None
+        message_id: int,
+        voice_invite: Optional[str]
     ) -> str:
         """Create a new tryout session"""
-        session = {
+        doc = {
             "guild_id": str(guild_id),
             "host_id": str(host_id),
-            "group_id": group_id,
+            "group_id": str(group_id),
             "group_name": group_name,
             "channel_id": str(channel_id),
-            "voice_channel_id": str(voice_channel_id),
-            "message_id": str(message_id) if message_id else None,
+            "voice_channel_id": str(voice_channel_id) if voice_channel_id else None,
+            "message_id": str(message_id),
             "voice_invite": voice_invite,
             "requirements": requirements,
             "description": description,
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.utcnow().replace(microsecond=0).isoformat(),
             "lock_timestamp": lock_timestamp,
             "status": "active",
             "ended_at": None,
             "end_reason": None,
-            "participants": [],
-            "accepted_participants": [],
-            "rejected_participants": [],
             "notes": []
         }
-        
-        result = await self.db["tryout_sessions"].insert_one(session)
+        result = await self.db["tryout_sessions"].insert_one(doc)
         return str(result.inserted_id)
 
-    async def get_tryout_session(self, session_id: str) -> dict:
+    async def get_tryout_session(self, session_id: str) -> Optional[dict]:
         """Get a tryout session by its ID"""
-        return await self.db["tryout_sessions"].find_one({"_id": session_id})
+        from bson import ObjectId
+        try:
+            return await self.db["tryout_sessions"].find_one({"_id": ObjectId(session_id)})
+        except Exception as e:
+            self.logger.error(f"Error getting tryout session {session_id}: {e}")
+            return None
 
     async def get_active_tryout_sessions(self, guild_id: int) -> list:
         """Get all active tryout sessions for a guild"""
@@ -784,137 +786,44 @@ class DatabaseManager:
             "status": "active"
         }).sort("created_at", -1).to_list(None)
 
-    async def get_host_tryout_sessions(self, guild_id: int, host_id: int) -> list:
-        """Get all tryout sessions hosted by a specific user in a guild"""
-        return await self.db["tryout_sessions"].find({
-            "guild_id": str(guild_id),
-            "host_id": str(host_id)
-        }).sort("created_at", -1).to_list(None)
-
-    async def end_tryout_session(
-        self,
-        session_id: str,
-        end_reason: str = "completed"
-    ) -> bool:
+    async def end_tryout_session(self, session_id: str, reason: str) -> bool:
         """End a tryout session"""
-        result = await self.db["tryout_sessions"].update_one(
-            {"_id": session_id},
-            {
-                "$set": {
-                    "status": "ended",
-                    "ended_at": datetime.utcnow().isoformat(),
-                    "end_reason": end_reason
+        from bson import ObjectId
+        try:
+            result = await self.db["tryout_sessions"].update_one(
+                {"_id": ObjectId(session_id)},
+                {
+                    "$set": {
+                        "status": "ended",
+                        "ended_at": datetime.utcnow().replace(microsecond=0).isoformat(),
+                        "end_reason": reason
+                    }
                 }
-            }
-        )
-        return result.modified_count > 0
-
-    async def add_tryout_participant(
-        self,
-        session_id: str,
-        user_id: int,
-        roblox_id: str = None
-    ) -> bool:
-        """Add a participant to a tryout session"""
-        participant = {
-            "user_id": str(user_id),
-            "roblox_id": roblox_id,
-            "joined_at": datetime.utcnow().isoformat()
-        }
-        result = await self.db["tryout_sessions"].update_one(
-            {"_id": session_id},
-            {"$addToSet": {"participants": participant}}
-        )
-        return result.modified_count > 0
-
-    async def update_participant_status(
-        self,
-        session_id: str,
-        user_id: int,
-        status: str,  # "accepted" or "rejected"
-        reason: str = None
-    ) -> bool:
-        """Update a participant's status in a tryout session"""
-        participant = {
-            "user_id": str(user_id),
-            "status_updated_at": datetime.utcnow().isoformat(),
-            "reason": reason
-        }
-        
-        status_field = f"{status}_participants"
-        if status not in ["accepted", "rejected"]:
-            raise ValueError("Status must be either 'accepted' or 'rejected'")
-            
-        result = await self.db["tryout_sessions"].update_one(
-            {"_id": session_id},
-            {"$addToSet": {status_field: participant}}
-        )
-        return result.modified_count > 0
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            self.logger.error(f"Error ending tryout session {session_id}: {e}")
+            return False
 
     async def add_tryout_note(
         self,
         session_id: str,
-        author_id: int,
+        moderator_id: int,
         note: str
     ) -> bool:
         """Add a note to a tryout session"""
-        note_entry = {
-            "author_id": str(author_id),
-            "note": note,
-            "created_at": datetime.utcnow().isoformat()
-        }
-        result = await self.db["tryout_sessions"].update_one(
-            {"_id": session_id},
-            {"$push": {"notes": note_entry}}
-        )
-        return result.modified_count > 0
-
-    async def get_tryout_stats(
-        self,
-        guild_id: int,
-        start_date: str = None,
-        end_date: str = None
-    ) -> dict:
-        """Get statistics about tryout sessions in a guild"""
-        match_query = {"guild_id": str(guild_id)}
-        if start_date:
-            match_query["created_at"] = {"$gte": start_date}
-        if end_date:
-            match_query.setdefault("created_at", {})["$lte"] = end_date
-
-        pipeline = [
-            {"$match": match_query},
-            {
-                "$group": {
-                    "_id": None,
-                    "total_sessions": {"$sum": 1},
-                    "active_sessions": {
-                        "$sum": {"$cond": [{"$eq": ["$status", "active"]}, 1, 0]}
-                    },
-                    "total_participants": {
-                        "$sum": {"$size": "$participants"}
-                    },
-                    "accepted_participants": {
-                        "$sum": {"$size": "$accepted_participants"}
-                    },
-                    "rejected_participants": {
-                        "$sum": {"$size": "$rejected_participants"}
-                    },
-                    "avg_session_duration": {
-                        "$avg": {
-                            "$cond": [
-                                {"$eq": ["$status", "ended"]},
-                                {"$subtract": [
-                                    {"$dateFromString": {"dateString": "$ended_at"}},
-                                    {"$dateFromString": {"dateString": "$created_at"}}
-                                ]},
-                                0
-                            ]
-                        }
-                    }
-                }
+        from bson import ObjectId
+        try:
+            note_doc = {
+                "moderator_id": str(moderator_id),
+                "note": note,
+                "timestamp": datetime.utcnow().replace(microsecond=0).isoformat()
             }
-        ]
-
-        results = await self.db["tryout_sessions"].aggregate(pipeline).to_list(None)
-        return results[0] if results else None
+            result = await self.db["tryout_sessions"].update_one(
+                {"_id": ObjectId(session_id)},
+                {"$push": {"notes": note_doc}}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            self.logger.error(f"Error adding note to session {session_id}: {e}")
+            return False
