@@ -74,7 +74,7 @@ class PaginatedDropdownView(discord.ui.View):
         voice_channel = interaction.user.voice.channel if interaction.user.voice else None
         vc_display = ""
         if voice_channel:
-            invite = await voice_channel.create_invite()
+            invite = await voice_channel.create_invite(max_age=43200)  # 12 hours in seconds
             vc_display = invite.url
 
         # Add one empty line between requirements and status
@@ -323,7 +323,7 @@ class Tryout(commands.Cog, name="tryout"):
                 # Generate a voice channel invite for the user's current VC
                 vc_display = ""
                 if user_vc:
-                    invite = await user_vc.create_invite()
+                    invite = await user_vc.create_invite(max_age=43200)  # 12 hours in seconds
                     vc_display = invite.url
 
                 if len(matching_groups) == 1:
