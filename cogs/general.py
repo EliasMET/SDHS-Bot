@@ -398,6 +398,7 @@ class General(commands.Cog, name="general"):
         name="embed", description="Create an embed in a specified channel."
     )
     @app_commands.describe(channel="The channel where the embed will be sent.")
+    @app_commands.default_permissions(manage_messages=True)
     async def embed_command(
         self, interaction: discord.Interaction, channel: discord.TextChannel
     ) -> None:
