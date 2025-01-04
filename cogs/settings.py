@@ -418,12 +418,12 @@ class TryoutGroupSelectView(discord.ui.View):
 
     def add_group_select(self):
         select = discord.ui.Select(
-            placeholder="Select a group to edit or create new",
+            placeholder="📋 Select a group to edit or create new",
             min_values=1,
             max_values=1,
             options=[
                 discord.SelectOption(
-                    label="➕ Create New Group",
+                    label="Create New Group",
                     value="new",
                     description="Create a new tryout group",
                     emoji="➕"
@@ -433,6 +433,13 @@ class TryoutGroupSelectView(discord.ui.View):
         select.callback = self.group_select_callback
         self.add_item(select)
         self.group_select = select
+
+    @discord.ui.button(label="Back to Settings", style=discord.ButtonStyle.secondary, emoji="◀️")
+    async def back_btn(self, interaction: discord.Interaction, _):
+        view = TryoutSettingsView(self.db, self.guild, self.settings_cog)
+        embed = await self.settings_cog.create_tryout_settings_embed(self.guild)
+        await interaction.response.edit_message(embed=embed, view=view)
+        view.message = interaction.message
 
     async def update_group_options(self):
         groups = await self.db.get_tryout_groups(self.guild.id)
@@ -446,7 +453,7 @@ class TryoutGroupSelectView(discord.ui.View):
             for g in groups
         ]
         options.insert(0, discord.SelectOption(
-            label="➕ Create New Group",
+            label="Create New Group",
             value="new",
             description="Create a new tryout group",
             emoji="➕"
@@ -467,6 +474,7 @@ class TryoutGroupSelectView(discord.ui.View):
                 view = GroupManagementView(self.db, self.guild, group, self.update_view, self.settings_cog)
                 embed = await view.create_group_embed()
                 await interaction.response.edit_message(embed=embed, view=view)
+                view.message = interaction.message
 
     async def update_view(self):
         if self.message:
@@ -477,26 +485,26 @@ class TryoutGroupSelectView(discord.ui.View):
 class NewTryoutGroupModal(discord.ui.Modal):
     group_id = discord.ui.TextInput(
         label="Group ID",
-        placeholder="Enter numeric group ID",
+        placeholder="Enter numeric group ID (e.g., 123456789)",
         required=True,
         max_length=20
     )
     event_name = discord.ui.TextInput(
         label="Event Name",
-        placeholder="Enter event name",
+        placeholder="Enter event name (e.g., Combat Tryouts)",
         required=True,
         max_length=100
     )
     description = discord.ui.TextInput(
         label="Description",
-        placeholder="Enter group description",
+        placeholder="Enter a detailed description of the tryout group",
         required=True,
         style=discord.TextStyle.paragraph,
         max_length=2000
     )
 
     def __init__(self, db, guild, update_callback, settings_cog):
-        super().__init__(title="Create New Tryout Group")
+        super().__init__(title="✨ Create New Tryout Group")
         self.db = db
         self.guild = guild
         self.update_callback = update_callback
@@ -507,13 +515,13 @@ class NewTryoutGroupModal(discord.ui.Modal):
             gid = self.group_id.value.strip()
             if not gid.isdigit():
                 return await interaction.response.send_message(
-                    embed=discord.Embed(title="Invalid ID", description="Group ID must be numeric.", color=0xE02B2B),
+                    embed=discord.Embed(title="❌ Invalid ID", description="Group ID must be numeric.", color=discord.Color.red()),
                     ephemeral=True
                 )
 
             if await self.db.get_tryout_group(self.guild.id, gid):
                 return await interaction.response.send_message(
-                    embed=discord.Embed(title="Group Exists", description="This ID already exists.", color=0xE02B2B),
+                    embed=discord.Embed(title="❌ Group Exists", description="This ID already exists.", color=discord.Color.red()),
                     ephemeral=True
                 )
 
@@ -525,18 +533,18 @@ class NewTryoutGroupModal(discord.ui.Modal):
                 requirements=[]
             )
 
-            embed = discord.Embed(
-                title="Group Created",
-                description=f"Created group: {self.event_name.value.strip()} (ID: {gid})",
-                color=discord.Color.green()
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            await self.update_callback()
+            # Get the newly created group and show its management view
+            group = await self.db.get_tryout_group(self.guild.id, gid)
+            if group:
+                view = GroupManagementView(self.db, self.guild, group, self.update_callback, self.settings_cog)
+                embed = await view.create_group_embed()
+                await interaction.response.edit_message(embed=embed, view=view)
+                view.message = interaction.message
 
         except Exception as e:
             logger.error(f"Error creating group: {e}")
             await interaction.response.send_message(
-                embed=discord.Embed(title="Error", description=str(e), color=0xE02B2B),
+                embed=discord.Embed(title="❌ Error", description=str(e), color=discord.Color.red()),
                 ephemeral=True
             )
 
@@ -552,17 +560,40 @@ class GroupManagementView(discord.ui.View):
 
     async def create_group_embed(self) -> discord.Embed:
         group_id, description, event_name, requirements, ping_roles = self.group
-        req_text = "\n".join(f"• {r}" for r in requirements) if requirements else "None"
-        roles_text = "\n".join(f"• <@&{r}>" for r in ping_roles) if ping_roles else "None"
+        
+        # Format requirements with emojis
+        req_text = "\n".join(f"📌 {r}" for r in requirements) if requirements else "None"
+        
+        # Format ping roles with emojis and better spacing
+        roles_text = "\n".join(f"🔔 <@&{r}>" for r in ping_roles) if ping_roles else "None"
 
         embed = discord.Embed(
-            title=f"🎯 {event_name}",
-            description=description,
+            title=f"🎯 Group Management: {event_name}",
             color=discord.Color.blue()
         )
-        embed.add_field(name="Group ID", value=group_id, inline=False)
-        embed.add_field(name="Requirements", value=req_text, inline=False)
-        embed.add_field(name="Ping Roles", value=roles_text, inline=False)
+        
+        # Add a nice separator and formatting
+        embed.description = f"**📝 Description**\n{description}\n\n"
+        embed.description += "━━━━━━━━━━━━━━━━━━━━━━"
+
+        embed.add_field(
+            name="🆔 Group ID",
+            value=f"`{group_id}`",
+            inline=False
+        )
+        embed.add_field(
+            name="📋 Requirements",
+            value=f"{req_text}",
+            inline=False
+        )
+        embed.add_field(
+            name="🔔 Ping Roles",
+            value=f"{roles_text}",
+            inline=False
+        )
+        
+        # Add footer with help text
+        embed.set_footer(text="Use the buttons below to edit different aspects of the group")
         return embed
 
     @discord.ui.button(label="Edit Name", style=discord.ButtonStyle.primary, emoji="✏️", row=0)
@@ -587,16 +618,16 @@ class GroupManagementView(discord.ui.View):
 
     @discord.ui.button(label="Delete Group", style=discord.ButtonStyle.danger, emoji="🗑️", row=2)
     async def delete_group_btn(self, interaction: discord.Interaction, _):
-        await self.db.delete_tryout_group(self.guild.id, self.group[0])
+        # Create confirmation embed
         embed = discord.Embed(
-            title="Group Deleted",
-            description=f"Deleted group: {self.group[2]} (ID: {self.group[0]})",
-            color=discord.Color.red()
+            title="⚠️ Confirm Deletion",
+            description=f"Are you sure you want to delete the group **{self.group[2]}**?\nThis action cannot be undone.",
+            color=discord.Color.yellow()
         )
-        await interaction.response.edit_message(embed=embed, view=None)
-        await self.update_callback()
+        view = DeleteConfirmationView(self.db, self.guild, self.group, self.update_callback, self.settings_cog)
+        await interaction.response.edit_message(embed=embed, view=view)
 
-    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary, emoji="◀️", row=2)
+    @discord.ui.button(label="Back to Groups", style=discord.ButtonStyle.secondary, emoji="◀️", row=2)
     async def back_btn(self, interaction: discord.Interaction, _):
         view = TryoutGroupSelectView(self.db, self.guild, self.settings_cog)
         await view.update_group_options()
@@ -611,6 +642,38 @@ class GroupManagementView(discord.ui.View):
                 embed = await self.create_group_embed()
                 await self.message.edit(embed=embed, view=self)
             await self.update_callback()
+
+class DeleteConfirmationView(discord.ui.View):
+    def __init__(self, db, guild, group, update_callback, settings_cog):
+        super().__init__(timeout=60)
+        self.db = db
+        self.guild = guild
+        self.group = group
+        self.update_callback = update_callback
+        self.settings_cog = settings_cog
+
+    @discord.ui.button(label="Confirm Delete", style=discord.ButtonStyle.danger, emoji="⚠️")
+    async def confirm_btn(self, interaction: discord.Interaction, _):
+        await self.db.delete_tryout_group(self.guild.id, self.group[0])
+        embed = discord.Embed(
+            title="✅ Group Deleted",
+            description=f"Successfully deleted group: **{self.group[2]}**",
+            color=discord.Color.green()
+        )
+        # Return to group selection
+        view = TryoutGroupSelectView(self.db, self.guild, self.settings_cog)
+        await view.update_group_options()
+        await interaction.response.edit_message(embed=embed, view=view)
+        view.message = interaction.message
+        await self.update_callback()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def cancel_btn(self, interaction: discord.Interaction, _):
+        # Return to group management
+        view = GroupManagementView(self.db, self.guild, self.group, self.update_callback, self.settings_cog)
+        embed = await view.create_group_embed()
+        await interaction.response.edit_message(embed=embed, view=view)
+        view.message = interaction.message
 
 class EditGroupNameModal(discord.ui.Modal):
     name = discord.ui.TextInput(
