@@ -1625,11 +1625,14 @@ class ModerationSettingsView(discord.ui.View):
             await interaction.response.edit_message(embed=embed, view=self)
             self.message = await interaction.original_response()
             
-            # Send confirmation message
-            await interaction.followup.send(
-                f"Global bans {'disabled' if current else 'enabled'}.",
-                ephemeral=True
+            # Send a nicely formatted confirmation message
+            confirm_embed = discord.Embed(
+                title="🌐 Global Bans Setting Updated",
+                description=f"Global bans have been **{'disabled' if current else 'enabled'}**.",
+                color=discord.Color.green() if not current else discord.Color.red()
             )
+            confirm_embed.set_footer(text="This setting affects how the bot handles global ban synchronization")
+            await interaction.followup.send(embed=confirm_embed, ephemeral=True)
 
     async def prev_page_btn(self, interaction: discord.Interaction):
         if self.page > 1:
