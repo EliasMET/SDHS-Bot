@@ -426,7 +426,7 @@ class Moderation(commands.Cog, name="moderation"):
 
             # DM embed
             dm_embed = discord.Embed(
-                description=f"You have been banned from the Homeland Security main server for {reason}",
+                description=reason,
                 color=discord.Color.red()
             )
             try:
@@ -493,6 +493,10 @@ class Moderation(commands.Cog, name="moderation"):
                 # Hack-ban across all guilds
                 ban_details = []
                 for g in self.bot.guilds:
+                    # Only ban in guilds where global bans are enabled
+                    if not await self.db.should_sync_global_bans(g.id):
+                        continue
+                        
                     if g.me.guild_permissions.ban_members:
                         was_in = g.get_member(member.id) is not None
                         try:
