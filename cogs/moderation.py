@@ -1882,8 +1882,21 @@ class Moderation(commands.Cog, name="moderation"):
             )
 
         async def callback(self, interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
             self.parent_view.selected_reason = self.parent_view.cog.BAN_REASONS[self.values[0]]
-            await self.parent_view.execute_ban(interaction)
+            
+            # Disable the dropdown
+            self.disabled = True
+            try:
+                await interaction.message.edit(view=self.parent_view)
+            except discord.NotFound:
+                pass  # Message might be gone, that's okay
+                
+            # Execute the ban
+            if self.parent_view.global_ban:
+                await self.parent_view.cog.handle_global_ban(interaction, self.parent_view.member, self.parent_view.selected_reason, self.parent_view.duration)
+            else:
+                await self.parent_view.cog.handle_local_ban(interaction, self.parent_view.member, self.parent_view.selected_reason)
 
     class BanView(discord.ui.View):
         BanReasonSelect = None  # This will be set after class definition
@@ -1897,23 +1910,14 @@ class Moderation(commands.Cog, name="moderation"):
             self.selected_reason = None
             self.add_item(self.BanReasonSelect(self))
 
-        async def execute_ban(self, interaction: discord.Interaction):
-            if not self.selected_reason:
-                return await interaction.response.send_message("❌ Please select a reason first.", ephemeral=True)
-            
-            # Disable all components
+        async def on_timeout(self):
+            # Disable the view when it times out
             for item in self.children:
                 item.disabled = True
-            await interaction.message.edit(view=self)
-
-            # Execute the ban with the selected reason
-            if self.global_ban:
-                await self.cog.handle_global_ban(interaction, self.member, self.selected_reason, self.duration)
-            else:
-                await self.cog.handle_local_ban(interaction, self.member, self.selected_reason)
-
-    # Set the BanReasonSelect class after both classes are defined
-    BanView.BanReasonSelect = BanReasonSelect
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, AttributeError):
+                pass  # Message might be gone or not set, that's okay
 
 #
 # Cog setup
