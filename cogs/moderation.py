@@ -104,6 +104,23 @@ class Moderation(commands.Cog, name="moderation"):
             1261031293744058532  # User 3
         ]
 
+        # Predefined ban reasons
+        self.BAN_REASONS = {
+            "1": "Show Respect and Courtesy to All Members - Communicate with others kindly and respectfully. Avoid any offensive language or hostile behavior, including personal insults.",
+            "2": "Harassment is Strictly Prohibited - We have a zero-tolerance policy for harassment, bullying, or intimidation.",
+            "3": "Keep Discussions On-Topic - Ensure your contributions align with the relevant topics in each channel.",
+            "4": "No Spamming or Unauthorized Promotions - Refrain from spamming or sharing unapproved promotional content.",
+            "5": "Keep Content Family-Friendly - Content should be suitable for all audiences. Refrain from sharing or discussing explicit, inappropriate, or adult material.",
+            "6": "Get Permission Before Advertising - Advertisements for other communities, services, or products are not allowed without prior approval.",
+            "7": "Protect Your and Others' Privacy - Do not share personal information without consent.",
+            "8": "Limit Overuse of Caps and Emojis - Please avoid excessive use of capital letters and emojis.",
+            "9": "Follow Channel-Specific Guidelines - Use the correct channels for your posts to maintain organization.",
+            "10": "No Disruptive Actions - Disruptive behaviors like trolling, raiding, or intentionally disturbing events will not be tolerated."
+        }
+
+        self.BanReasonSelect = self.BanView.BanReasonSelect
+        self.BanView = self.BanView
+
     async def check_global_ban_permission(self, user_id: int) -> bool:
         """Check if a user is authorized to use global ban commands"""
         return user_id in self.global_ban_authorized_users
@@ -383,7 +400,7 @@ class Moderation(commands.Cog, name="moderation"):
     @app_commands.command(name="ban", description="Ban a member (optionally globally) with optional duration.")
     @app_commands.describe(
         member="The member to ban (mention or ID).",
-        reason="Reason for banning.",
+        reason="Rule number (1-10) or custom reason.",
         global_ban="If True, ban user across all servers.",
         duration="Optional: 10m, 2h, 1d, etc. (for global ban expiration)."
     )
@@ -392,114 +409,129 @@ class Moderation(commands.Cog, name="moderation"):
         self,
         interaction: discord.Interaction,
         member: Union[discord.Member, discord.User],
-        reason: str = "No reason provided.",
+        reason: str = None,
         global_ban: bool = False,
         duration: str = None
     ):
-        """
-        If global_ban=True, hack-ban across all servers (optionally timed).
-        Otherwise, a normal single-guild ban.
-        """
         await interaction.response.defer(ephemeral=True)
 
-        if global_ban:
-            # Check if user is authorized for global bans
-            if not await self.check_global_ban_permission(interaction.user.id):
-                return await interaction.followup.send(
-                    embed=discord.Embed(
-                        description="❌ You are not authorized to use global bans.",
-                        color=discord.Color.red()
-                    ),
-                    ephemeral=True
-                )
-            
-            expires_at_dt = None
-            if duration:
-                secs = self.parse_duration(duration)
-                if not secs:
-                    e_err = discord.Embed(
-                        description="❌ Invalid duration. Use e.g. `10m`, `2h`, or `1d`.",
-                        color=discord.Color.red()
-                    )
-                    return await interaction.followup.send(embed=e_err, ephemeral=True)
-                expires_at_dt = datetime.utcnow() + timedelta(seconds=secs)
+        # If a numeric reason is provided, use it directly
+        if reason and reason.isdigit() and reason in self.BAN_REASONS:
+            reason = self.BAN_REASONS[reason]
 
-            # DM message
+        if reason:
+            if global_ban:
+                await self.handle_global_ban(interaction, member, reason, duration)
+            else:
+                await self.handle_local_ban(interaction, member, reason)
+            return
+
+        # If no reason provided, show the dropdown
+        view = self.BanView(self, member, global_ban, duration)
+        await interaction.followup.send(
+            f"Select a reason to {'globally ' if global_ban else ''}ban {member.mention}:",
+            view=view,
+            ephemeral=True
+        )
+
+    async def handle_global_ban(self, interaction: discord.Interaction, member: Union[discord.Member, discord.User], reason: str, duration: str = None):
+        """Handle a global ban with the given reason"""
+        if not await self.check_global_ban_permission(interaction.user.id):
+            return await interaction.followup.send(
+                embed=discord.Embed(
+                    description="❌ You are not authorized to use global bans.",
+                    color=discord.Color.red()
+                ),
+                ephemeral=True
+            )
+
+        expires_at_dt = None
+        if duration:
+            secs = self.parse_duration(duration)
+            if not secs:
+                e_err = discord.Embed(
+                    description="❌ Invalid duration. Use e.g. `10m`, `2h`, or `1d`.",
+                    color=discord.Color.red()
+                )
+                return await interaction.followup.send(embed=e_err, ephemeral=True)
+            expires_at_dt = datetime.utcnow() + timedelta(seconds=secs)
+
+        # DM message
+        try:
+            await member.send(f"You have been banned from the Homeland Security main server for {reason} - it is linked to one of our guideline statements")
+        except (discord.Forbidden, discord.HTTPException) as e:
+            self.logger.warning(f"Could not DM user {member.id} after auto-ban: {e}")
+
+        # Possibly get Roblox info from Bloxlink
+        roblox_user_id = None
+        roblox_username = "Unknown"
+        bloxlink_api_key = os.getenv("BLOXLINK_TOKEN")
+        if bloxlink_api_key:
             try:
-                await member.send(f"You have been banned from the Homeland Security main server for {reason} - it is linked to one of our guideline statements")
-            except (discord.Forbidden, discord.HTTPException) as e:
-                self.logger.warning(f"Could not DM user {member.id} after auto-ban: {e}")
+                guild_id = interaction.guild.id
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    url = f"https://api.blox.link/v4/public/guilds/{guild_id}/discord-to-roblox/{member.id}"
+                    headers = {"Authorization": bloxlink_api_key}
+                    async with session.get(url, headers=headers) as resp:
+                        data = await resp.json()
+                        if resp.status == 200 and "robloxID" in data:
+                            roblox_user_id = str(data["robloxID"])
+                            # fetch more from Roblox
+                            roblox_url = f"https://users.roblox.com/v1/users/{roblox_user_id}"
+                            async with session.get(roblox_url) as r2:
+                                r2_json = await r2.json()
+                                roblox_username = r2_json.get("name", "Unknown")
+            except Exception as e:
+                self.logger.warning(f"Bloxlink error: {e}")
 
-            # Possibly get Roblox info from Bloxlink
-            roblox_user_id = None
-            roblox_username = "Unknown"
-            bloxlink_api_key = os.getenv("BLOXLINK_TOKEN")
-            if bloxlink_api_key:
-                try:
-                    guild_id = interaction.guild.id
-                    import aiohttp
-                    async with aiohttp.ClientSession() as session:
-                        url = f"https://api.blox.link/v4/public/guilds/{guild_id}/discord-to-roblox/{member.id}"
-                        headers = {"Authorization": bloxlink_api_key}
-                        async with session.get(url, headers=headers) as resp:
-                            data = await resp.json()
-                            if resp.status == 200 and "robloxID" in data:
-                                roblox_user_id = str(data["robloxID"])
-                                # fetch more from Roblox
-                                roblox_url = f"https://users.roblox.com/v1/users/{roblox_user_id}"
-                                async with session.get(roblox_url) as r2:
-                                    r2_json = await r2.json()
-                                    roblox_username = r2_json.get("name", "Unknown")
-                except Exception as e:
-                    self.logger.warning(f"Bloxlink error: {e}")
-
-            # DB write for global ban
-            async with self.global_ban_lock:
-                try:
-                    await self.db.add_global_ban(
-                        discord_user_id=member.id,
-                        roblox_user_id=roblox_user_id,
-                        reason=reason,
-                        moderator_discord_id=interaction.user.id,
-                        expires_at=expires_at_dt
-                    )
-                except Exception as e:
-                    e_db_err = discord.Embed(
-                        description=f"❌ Failed to add global ban record: {e}",
-                        color=discord.Color.red()
-                    )
-                    return await interaction.followup.send(embed=e_db_err, ephemeral=True)
-
-                # Add a "global_ban" case
-                extra_info = {
-                    "roblox_id": roblox_user_id,
-                    "roblox_username": roblox_username,
-                    "duration": duration or "indefinite",
-                    "expires_at": expires_at_dt.isoformat() if expires_at_dt else None
-                }
-                case_id = await self.db.add_case(
-                    interaction.guild.id,
-                    member.id,
-                    interaction.user.id,
-                    "global_ban",
-                    reason,
-                    extra=extra_info
+        # DB write for global ban
+        async with self.global_ban_lock:
+            try:
+                await self.db.add_global_ban(
+                    discord_user_id=member.id,
+                    roblox_user_id=roblox_user_id,
+                    reason=reason,
+                    moderator_discord_id=interaction.user.id,
+                    expires_at=expires_at_dt
                 )
+            except Exception as e:
+                e_db_err = discord.Embed(
+                    description=f"❌ Failed to add global ban record: {e}",
+                    color=discord.Color.red()
+                )
+                return await interaction.followup.send(embed=e_db_err, ephemeral=True)
 
-                # Hack-ban across all guilds
-                ban_details = []
-                for g in self.bot.guilds:
-                    # Only ban in guilds where global bans are enabled
-                    if not await self.db.should_sync_global_bans(g.id):
-                        continue
-                        
-                    if g.me.guild_permissions.ban_members:
-                        was_in = g.get_member(member.id) is not None
-                        try:
-                            await g.ban(discord.Object(id=member.id), reason=f"[Global Ban] {reason}")
-                            ban_details.append((g.name, was_in, True))
-                        except Exception:
-                            ban_details.append((g.name, was_in, False))
+            # Add a "global_ban" case
+            extra_info = {
+                "roblox_id": roblox_user_id,
+                "roblox_username": roblox_username,
+                "duration": duration or "indefinite",
+                "expires_at": expires_at_dt.isoformat() if expires_at_dt else None
+            }
+            case_id = await self.db.add_case(
+                interaction.guild.id,
+                member.id,
+                interaction.user.id,
+                "global_ban",
+                reason,
+                extra=extra_info
+            )
+
+            # Hack-ban across all guilds
+            ban_details = []
+            for g in self.bot.guilds:
+                # Only ban in guilds where global bans are enabled
+                if not await self.db.should_sync_global_bans(g.id):
+                    continue
+                    
+                if g.me.guild_permissions.ban_members:
+                    was_in = g.get_member(member.id) is not None
+                    try:
+                        await g.ban(discord.Object(id=member.id), reason=f"[Global Ban] {reason}")
+                        ban_details.append((g.name, was_in, True))
+                    except Exception:
+                        ban_details.append((g.name, was_in, False))
 
             # Summaries
             success_lines = []
@@ -535,43 +567,43 @@ class Moderation(commands.Cog, name="moderation"):
                 duration
             )
 
+    async def handle_local_ban(self, interaction: discord.Interaction, member: Union[discord.Member, discord.User], reason: str):
+        """Handle a local ban with the given reason"""
+        if isinstance(member, discord.Member):
+            try:
+                await member.ban(reason=reason, delete_message_days=0)
+            except discord.Forbidden:
+                e_p = discord.Embed(description="❌ Missing perms to ban user.", color=discord.Color.red())
+                return await interaction.followup.send(embed=e_p, ephemeral=True)
+            except discord.HTTPException as exc:
+                e_p = discord.Embed(description=f"❌ Ban failed: {exc}", color=discord.Color.red())
+                return await interaction.followup.send(embed=e_p, ephemeral=True)
         else:
-            # single-guild ban
-            if isinstance(member, discord.Member):
-                try:
-                    await member.ban(reason=reason, delete_message_days=0)
-                except discord.Forbidden:
-                    e_p = discord.Embed(description="❌ Missing perms to ban user.", color=discord.Color.red())
-                    return await interaction.followup.send(embed=e_p, ephemeral=True)
-                except discord.HTTPException as exc:
-                    e_p = discord.Embed(description=f"❌ Ban failed: {exc}", color=discord.Color.red())
-                    return await interaction.followup.send(embed=e_p, ephemeral=True)
-            else:
-                try:
-                    await interaction.guild.ban(discord.Object(id=member.id), reason=f"[Local Ban] {reason}")
-                except discord.Forbidden:
-                    e_p = discord.Embed(description="❌ Missing perms to ban user.", color=discord.Color.red())
-                    return await interaction.followup.send(embed=e_p, ephemeral=True)
-                except discord.HTTPException as exc:
-                    e_p = discord.Embed(description=f"❌ Ban failed: {exc}", color=discord.Color.red())
-                    return await interaction.followup.send(embed=e_p, ephemeral=True)
+            try:
+                await interaction.guild.ban(discord.Object(id=member.id), reason=f"[Local Ban] {reason}")
+            except discord.Forbidden:
+                e_p = discord.Embed(description="❌ Missing perms to ban user.", color=discord.Color.red())
+                return await interaction.followup.send(embed=e_p, ephemeral=True)
+            except discord.HTTPException as exc:
+                e_p = discord.Embed(description=f"❌ Ban failed: {exc}", color=discord.Color.red())
+                return await interaction.followup.send(embed=e_p, ephemeral=True)
 
-            case_id = await self.db.add_case(
-                interaction.guild.id, member.id, interaction.user.id, "ban", reason
-            )
-            e_done = discord.Embed(
-                description=f"🔨 **Banned** {member.mention}\n**Reason:** {reason}\n**Case:** `{case_id}`",
-                color=discord.Color.green()
-            )
-            await interaction.followup.send(embed=e_done, ephemeral=True)
+        case_id = await self.db.add_case(
+            interaction.guild.id, member.id, interaction.user.id, "ban", reason
+        )
+        e_done = discord.Embed(
+            description=f"🔨 **Banned** {member.mention}\n**Reason:** {reason}\n**Case:** `{case_id}`",
+            color=discord.Color.green()
+        )
+        await interaction.followup.send(embed=e_done, ephemeral=True)
 
-            await self.log_moderation_action(
-                interaction.guild,
-                "Ban",
-                interaction.user,
-                member,
-                reason
-            )
+        await self.log_moderation_action(
+            interaction.guild,
+            "Ban",
+            interaction.user,
+            member,
+            reason
+        )
 
     #
     # --------------- /unban Command ---------------
@@ -1832,6 +1864,53 @@ class Moderation(commands.Cog, name="moderation"):
         """When the bot joins a guild, sync global bans if enabled"""
         if await self.db.should_sync_global_bans(guild.id):
             await self.sync_global_bans_for_guild(guild)
+
+    class BanReasonSelect(discord.ui.Select):
+        def __init__(self, parent_view):
+            self.parent_view = parent_view
+            options = [
+                discord.SelectOption(
+                    label=f"Rule {num}",
+                    value=num,
+                    description=desc.split(" - ")[0][:100]  # Truncate to fit Discord's limit
+                )
+                for num, desc in parent_view.cog.BAN_REASONS.items()
+            ]
+            super().__init__(
+                placeholder="Select a ban reason...",
+                min_values=1,
+                max_values=1,
+                options=options
+            )
+
+        async def callback(self, interaction: discord.Interaction):
+            self.parent_view.selected_reason = self.parent_view.cog.BAN_REASONS[self.values[0]]
+            await self.parent_view.execute_ban(interaction)
+
+    class BanView(discord.ui.View):
+        def __init__(self, cog, member, global_ban: bool, duration: str = None):
+            super().__init__(timeout=60)
+            self.cog = cog
+            self.member = member
+            self.global_ban = global_ban
+            self.duration = duration
+            self.selected_reason = None
+            self.add_item(self.cog.BanReasonSelect(self))
+
+        async def execute_ban(self, interaction: discord.Interaction):
+            if not self.selected_reason:
+                return await interaction.response.send_message("❌ Please select a reason first.", ephemeral=True)
+            
+            # Disable all components
+            for item in self.children:
+                item.disabled = True
+            await interaction.message.edit(view=self)
+
+            # Execute the ban with the selected reason
+            if self.global_ban:
+                await self.cog.handle_global_ban(interaction, self.member, self.selected_reason, self.duration)
+            else:
+                await self.cog.handle_local_ban(interaction, self.member, self.selected_reason)
 
 #
 # Cog setup
