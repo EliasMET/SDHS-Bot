@@ -174,6 +174,10 @@ class DatabaseManager:
             if "ping_roles" in data:
                 del data["ping_roles"]
                 changed = True
+            # Add global_bans_enabled if it doesn't exist
+            if "global_bans_enabled" not in data["settings"]:
+                data["settings"]["global_bans_enabled"] = True
+                changed = True
             if changed:
                 await self._update_server_data(server_id, data)
         return data
@@ -199,7 +203,8 @@ class DatabaseManager:
             'mod_log_channel_id': int(s['mod_log_channel_id']) if s.get('mod_log_channel_id') else None,
             'automod_mute_duration': int(s.get('automod_mute_duration', 3600)),
             'automod_spam_limit': int(s.get('automod_spam_limit', 5)),
-            'automod_spam_window': int(s.get('automod_spam_window', 5))
+            'automod_spam_window': int(s.get('automod_spam_window', 5)),
+            'global_bans_enabled': bool(s.get('global_bans_enabled', True))
         }
 
     async def update_server_setting(self, server_id: int, setting_name: str, value):
