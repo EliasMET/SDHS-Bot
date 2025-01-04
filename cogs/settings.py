@@ -173,25 +173,32 @@ class Settings(commands.Cog):
 
     async def create_tryout_settings_embed(self, guild: discord.Guild) -> discord.Embed:
         ch_id = await self.db.get_tryout_channel_id(guild.id)
-        ch = f"<#{ch_id}>" if ch_id else "Not Set"
+        ch = f"<#{ch_id}>" if ch_id else "❌ Not Set"
         req = await self.db.get_tryout_required_roles(guild.id)
-        req_display = ", ".join(f"<@&{r}>" for r in req) if req else "Not Set"
+        req_display = ", ".join(f"<@&{r}>" for r in req) if req else "❌ Not Set"
         groups = await self.db.get_tryout_groups(guild.id)
         grp_display = "\n\n".join(
-            f"**{g[2]}** (ID: {g[0]})\nDescription: {g[1]}\nRequirements:\n" + 
-            ("\n".join(f"- {r}" for r in g[3]) if g[3] else "None") +
-            "\nPing Roles:\n" + 
-            ("\n".join(f"- <@&{r}>" for r in g[4]) if g[4] else "None")
+            f"**🎯 {g[2]}** (ID: `{g[0]}`)\n" +
+            f"📝 Description: {g[1]}\n" +
+            f"📋 Requirements:\n" + 
+            ("\n".join(f"• {r}" for r in g[3]) if g[3] else "None") +
+            f"\n🔔 Ping Roles: " + 
+            (", ".join(f"<@&{r}>" for r in g[4]) if g[4] else "None")
             for g in groups
-        ) if groups else "No groups."
+        ) if groups else "❌ No groups configured."
         allowed_vcs = await self.db.get_tryout_allowed_vcs(guild.id)
-        vc_display = ", ".join(f"<#{vc}>" for vc in allowed_vcs) if allowed_vcs else "None"
+        vc_display = ", ".join(f"<#{vc}>" for vc in allowed_vcs) if allowed_vcs else "❌ Not Set"
 
-        embed = discord.Embed(title="⚙️ Tryout Settings", color=discord.Color.blue())
-        embed.add_field(name="Tryout Channel", value=ch, inline=False)
-        embed.add_field(name="Required Roles", value=req_display, inline=False)
-        embed.add_field(name="Tryout Groups", value=grp_display, inline=False)
-        embed.add_field(name="Allowed Voice Channels", value=vc_display, inline=False)
+        embed = discord.Embed(
+            title="⚙️ Tryout Settings",
+            color=discord.Color.blue(),
+            description="Configure your tryout system settings below."
+        )
+        embed.add_field(name="📌 Tryout Channel", value=ch, inline=False)
+        embed.add_field(name="👥 Required Roles", value=req_display, inline=False)
+        embed.add_field(name="🎯 Tryout Groups", value=grp_display, inline=False)
+        embed.add_field(name="🔊 Allowed Voice Channels", value=vc_display, inline=False)
+        embed.set_footer(text="Use the buttons below to manage settings")
         return embed
 
     async def create_moderation_settings_embed(self, guild: discord.Guild) -> discord.Embed:
@@ -561,39 +568,52 @@ class GroupManagementView(discord.ui.View):
     async def create_group_embed(self) -> discord.Embed:
         group_id, description, event_name, requirements, ping_roles = self.group
         
-        # Format requirements with emojis
-        req_text = "\n".join(f"📌 {r}" for r in requirements) if requirements else "None"
-        
-        # Format ping roles with emojis and better spacing
-        roles_text = "\n".join(f"🔔 <@&{r}>" for r in ping_roles) if ping_roles else "None"
-
         embed = discord.Embed(
             title=f"🎯 Group Management: {event_name}",
             color=discord.Color.blue()
         )
         
-        # Add a nice separator and formatting
-        embed.description = f"**📝 Description**\n{description}\n\n"
-        embed.description += "━━━━━━━━━━━━━━━━━━━━━━"
-
-        embed.add_field(
-            name="🆔 Group ID",
-            value=f"`{group_id}`",
-            inline=False
-        )
-        embed.add_field(
-            name="📋 Requirements",
-            value=f"{req_text}",
-            inline=False
-        )
-        embed.add_field(
-            name="🔔 Ping Roles",
-            value=f"{roles_text}",
-            inline=False
-        )
+        # Add a nice header with group ID
+        embed.description = f"**🆔 Group ID:** `{group_id}`\n\n"
         
-        # Add footer with help text
-        embed.set_footer(text="Use the buttons below to edit different aspects of the group")
+        # Add description with proper formatting
+        embed.description += f"**📝 Description**\n{description}\n\n"
+        
+        # Add separator
+        embed.description += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        # Format requirements with bullets and spacing
+        if requirements:
+            req_text = "\n".join(f"• {r}" for r in requirements)
+            embed.add_field(
+                name="📋 Requirements",
+                value=req_text,
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="📋 Requirements",
+                value="❌ No requirements set",
+                inline=False
+            )
+        
+        # Format ping roles with better spacing and commas
+        if ping_roles:
+            roles_text = ", ".join(f"<@&{r}>" for r in ping_roles)
+            embed.add_field(
+                name="🔔 Ping Roles",
+                value=roles_text,
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="🔔 Ping Roles",
+                value="❌ No ping roles set",
+                inline=False
+            )
+        
+        # Add helpful footer
+        embed.set_footer(text="Use the buttons below to edit • Changes will update automatically")
         return embed
 
     @discord.ui.button(label="Edit Name", style=discord.ButtonStyle.primary, emoji="✏️", row=0)
@@ -618,10 +638,13 @@ class GroupManagementView(discord.ui.View):
 
     @discord.ui.button(label="Delete Group", style=discord.ButtonStyle.danger, emoji="🗑️", row=2)
     async def delete_group_btn(self, interaction: discord.Interaction, _):
-        # Create confirmation embed
         embed = discord.Embed(
             title="⚠️ Confirm Deletion",
-            description=f"Are you sure you want to delete the group **{self.group[2]}**?\nThis action cannot be undone.",
+            description=(
+                f"Are you sure you want to delete the group **{self.group[2]}**?\n\n"
+                "**This action cannot be undone!**\n"
+                "All settings, requirements, and ping roles will be lost."
+            ),
             color=discord.Color.yellow()
         )
         view = DeleteConfirmationView(self.db, self.guild, self.group, self.update_callback, self.settings_cog)
@@ -777,14 +800,14 @@ class EditGroupRequirementsModal(discord.ui.Modal):
 class EditGroupPingRolesModal(discord.ui.Modal):
     roles = discord.ui.TextInput(
         label="Ping Roles",
-        placeholder="Enter role IDs (one per line)",
+        placeholder="Enter role IDs separated by spaces (e.g., 123456789 987654321)",
         required=True,
         style=discord.TextStyle.paragraph,
         max_length=2000
     )
 
     def __init__(self, db, guild, group, update_callback, settings_cog):
-        super().__init__(title=f"Edit Ping Roles - {group[2]}")
+        super().__init__(title=f"🔔 Edit Ping Roles - {group[2]}")
         self.db = db
         self.guild = guild
         self.group = group
@@ -800,7 +823,7 @@ class EditGroupPingRolesModal(discord.ui.Modal):
             # Add new roles
             valid_roles = []
             invalid_roles = []
-            for role_id in self.roles.value.strip().split('\n'):
+            for role_id in self.roles.value.strip().split():
                 role_id = role_id.strip()
                 if role_id.isdigit():
                     role = self.guild.get_role(int(role_id))
@@ -814,29 +837,45 @@ class EditGroupPingRolesModal(discord.ui.Modal):
 
             # Create response embed
             embed = discord.Embed(
-                title="Ping Roles Updated",
+                title="✅ Ping Roles Updated",
+                description=f"Successfully updated ping roles for **{self.group[2]}**",
                 color=discord.Color.green()
             )
             if valid_roles:
                 embed.add_field(
-                    name="Added Roles",
-                    value="\n".join(f"<@&{rid}>" for rid in valid_roles),
+                    name="🔔 Added Roles",
+                    value=", ".join(f"<@&{rid}>" for rid in valid_roles),
                     inline=False
                 )
             if invalid_roles:
                 embed.add_field(
-                    name="Invalid IDs",
-                    value="\n".join(invalid_roles),
+                    name="❌ Invalid IDs",
+                    value=", ".join(f"`{rid}`" for rid in invalid_roles),
                     inline=False
                 )
 
             await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+            # Update both the group management view and the settings view
             await self.update_callback()
+            
+            # Also update the current group management view
+            if interaction.message:
+                group = await self.db.get_tryout_group(self.guild.id, self.group[0])
+                if group:
+                    view = GroupManagementView(self.db, self.guild, group, self.update_callback, self.settings_cog)
+                    embed = await view.create_group_embed()
+                    await interaction.message.edit(embed=embed, view=view)
+                    view.message = interaction.message
 
         except Exception as e:
             logger.error(f"Error updating ping roles: {e}")
             await interaction.response.send_message(
-                embed=discord.Embed(title="Error", description=str(e), color=0xE02B2B),
+                embed=discord.Embed(
+                    title="❌ Error",
+                    description=f"An error occurred: {str(e)}",
+                    color=discord.Color.red()
+                ),
                 ephemeral=True
             )
 
