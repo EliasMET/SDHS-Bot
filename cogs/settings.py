@@ -42,11 +42,18 @@ class Settings(commands.Cog):
         return discord.Embed(title=title, description=description, color=0xE02B2B)
 
     async def send_error_response(self, interaction: discord.Interaction, title: str, description: str):
-        embed = self.create_error_embed(title, description)
-        if not interaction.response.is_done():
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-        else:
-            await interaction.followup.send(embed=embed, ephemeral=True)
+        """Send an error response with better interaction handling"""
+        try:
+            embed = self.create_error_embed(title, description)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                try:
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                except discord.HTTPException as e:
+                    logger.error(f"Failed to send error followup: {e}")
+        except Exception as e:
+            logger.error(f"Failed to send error response: {e}")
 
     async def handle_exception(self, interaction: discord.Interaction, e: Exception, context: str = "handling settings"):
         logger.error("An error occurred while %s:", context)
@@ -65,25 +72,53 @@ class Settings(commands.Cog):
         app_commands.Choice(name="Autopromotion", value=SettingsCategory.AUTOPROMOTION.value)
     ])
     async def settings_command(self, interaction: discord.Interaction, category: app_commands.Choice[str]):
-        if not await self.is_admin_or_owner(interaction):
-            return await self.send_error_response(
-                interaction,
-                "Missing Permissions",
-                "You need Administrator permission or be the bot owner."
-            )
-
-        await interaction.response.defer(ephemeral=True)
-        handler = self.category_handlers.get(category.value)
-        if not handler:
-            return await interaction.followup.send(
-                embed=self.create_error_embed("Invalid Category", f"The category `{category.value}` is not recognized."),
-                ephemeral=True
-            )
-
         try:
-            await handler(interaction)
+            if not await self.is_admin_or_owner(interaction):
+                return await self.send_error_response(
+                    interaction,
+                    "Missing Permissions",
+                    "You need Administrator permission or be the bot owner."
+                )
+
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except discord.NotFound:
+                logger.error(f"Interaction not found when deferring response for category {category.value}")
+                return
+            except discord.HTTPException as e:
+                logger.error(f"HTTP error when deferring response for category {category.value}: {e}")
+                return
+
+            handler = self.category_handlers.get(category.value)
+            if not handler:
+                return await interaction.followup.send(
+                    embed=self.create_error_embed("Invalid Category", f"The category `{category.value}` is not recognized."),
+                    ephemeral=True
+                )
+
+            try:
+                await handler(interaction)
+            except Exception as e:
+                logger.error(f"Error in category handler for {category.value}:")
+                traceback.print_exc()
+                await self.handle_exception(interaction, e, context=f"processing {category.value} settings")
+
         except Exception as e:
-            await self.handle_exception(interaction, e, context=f"processing {category.value} settings")
+            logger.error("Unexpected error in settings command:")
+            traceback.print_exc()
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        embed=self.create_error_embed("Error", f"An unexpected error occurred: {str(e)}"),
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(
+                        embed=self.create_error_embed("Error", f"An unexpected error occurred: {str(e)}"),
+                        ephemeral=True
+                    )
+            except Exception as e2:
+                logger.error(f"Failed to send error message: {e2}")
 
     async def handle_automod_settings(self, interaction: discord.Interaction):
         try:
@@ -265,20 +300,48 @@ class Settings(commands.Cog):
 
     @settings_command.error
     async def settings_error(self, interaction: discord.Interaction, error):
+        """Enhanced error handling for settings command"""
         logger.error("Error in settings command:")
         traceback.print_exc()
-        if isinstance(error, app_commands.MissingPermissions):
-            await self.send_error_response(
-                interaction,
-                "Missing Permissions",
-                "You need Administrator permission or be the bot owner."
-            )
-        else:
-            await self.send_error_response(
-                interaction,
-                "Error",
-                f"An unexpected error occurred: {type(error).__name__}: {error}"
-            )
+        
+        try:
+            if isinstance(error, app_commands.MissingPermissions):
+                await self.send_error_response(
+                    interaction,
+                    "Missing Permissions",
+                    "You need Administrator permission or be the bot owner."
+                )
+            elif isinstance(error, discord.NotFound):
+                logger.error(f"Interaction not found: {error}")
+                # Don't try to respond as the interaction is invalid
+                return
+            elif isinstance(error, discord.HTTPException):
+                logger.error(f"HTTP error in settings command: {error}")
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        embed=self.create_error_embed("Error", "Failed to process your request. Please try again."),
+                        ephemeral=True
+                    )
+            else:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        embed=self.create_error_embed(
+                            "Error",
+                            f"An unexpected error occurred: {type(error).__name__}: {error}"
+                        ),
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(
+                        embed=self.create_error_embed(
+                            "Error",
+                            f"An unexpected error occurred: {type(error).__name__}: {error}"
+                        ),
+                        ephemeral=True
+                    )
+        except Exception as e:
+            logger.error(f"Failed to handle settings error: {e}")
+            traceback.print_exc()
 
 
 class BaseChannelModal(discord.ui.Modal):
@@ -539,20 +602,60 @@ class TryoutGroupSelectView(discord.ui.View):
         self.group_select.options = options
 
     async def group_select_callback(self, interaction: discord.Interaction):
-        selected_value = self.group_select.values[0]
-        
-        if selected_value == "new":
-            # Show modal for new group creation
-            modal = NewTryoutGroupModal(self.db, self.guild, self.update_view, self.settings_cog)
-            await interaction.response.send_modal(modal)
-        else:
-            # Show management view for existing group
-            group = await self.db.get_tryout_group(self.guild.id, selected_value)
-            if group:
-                view = GroupManagementView(self.db, self.guild, group, self.update_view, self.settings_cog)
-                embed = await view.create_group_embed()
-                await interaction.response.edit_message(embed=embed, view=view)
-                view.message = interaction.message
+        try:
+            selected_value = self.group_select.values[0]
+            logger.debug(f"Group selection callback triggered with value: {selected_value}")
+            
+            try:
+                if selected_value == "new":
+                    # Show modal for new group creation
+                    modal = NewTryoutGroupModal(self.db, self.guild, self.update_view, self.settings_cog)
+                    await interaction.response.send_modal(modal)
+                else:
+                    # Show management view for existing group
+                    group = await self.db.get_tryout_group(self.guild.id, selected_value)
+                    if group:
+                        view = GroupManagementView(self.db, self.guild, group, self.update_view, self.settings_cog)
+                        embed = await view.create_group_embed()
+                        await interaction.response.edit_message(embed=embed, view=view)
+                        view.message = interaction.message
+                    else:
+                        logger.warning(f"Selected group {selected_value} not found in database")
+                        await interaction.response.send_message(
+                            embed=discord.Embed(
+                                title="❌ Error",
+                                description="The selected group could not be found. It may have been deleted.",
+                                color=discord.Color.red()
+                            ),
+                            ephemeral=True
+                        )
+            except discord.NotFound:
+                logger.error(f"Interaction not found when handling group selection: {selected_value}")
+                return
+            except discord.HTTPException as e:
+                logger.error(f"HTTP error when handling group selection: {e}")
+                await interaction.followup.send(
+                    embed=discord.Embed(
+                        title="❌ Error",
+                        description="Failed to process your selection. Please try again.",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
+        except Exception as e:
+            logger.error(f"Error in group selection callback:")
+            traceback.print_exc()
+            try:
+                await interaction.followup.send(
+                    embed=discord.Embed(
+                        title="❌ Error",
+                        description=f"An unexpected error occurred: {str(e)}",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
+            except Exception as e2:
+                logger.error(f"Failed to send error message: {e2}")
 
     async def update_view(self):
         if self.message:
