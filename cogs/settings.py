@@ -177,18 +177,8 @@ class Settings(commands.Cog):
         req = await self.db.get_tryout_required_roles(guild.id)
         req_display = ", ".join(f"<@&{r}>" for r in req) if req else "❌ Not Set"
         groups = await self.db.get_tryout_groups(guild.id)
-        grp_display = "\n\n".join(
-            f"**🎯 {g[2]}** (ID: `{g[0]}`)\n" +
-            f"📝 Description: {g[1]}\n" +
-            f"📋 Requirements:\n" + 
-            ("\n".join(f"• {r}" for r in g[3]) if g[3] else "None") +
-            f"\n🔔 Ping Roles: " + 
-            (", ".join(f"<@&{r}>" for r in g[4]) if g[4] else "None")
-            for g in groups
-        ) if groups else "❌ No groups configured."
-        allowed_vcs = await self.db.get_tryout_allowed_vcs(guild.id)
-        vc_display = ", ".join(f"<#{vc}>" for vc in allowed_vcs) if allowed_vcs else "❌ Not Set"
-
+        
+        # Create main embed
         embed = discord.Embed(
             title="⚙️ Tryout Settings",
             color=discord.Color.blue(),
@@ -196,9 +186,62 @@ class Settings(commands.Cog):
         )
         embed.add_field(name="📌 Tryout Channel", value=ch, inline=False)
         embed.add_field(name="👥 Required Roles", value=req_display, inline=False)
-        embed.add_field(name="🎯 Tryout Groups", value=grp_display, inline=False)
+        
+        # Handle groups with potential length issues
+        if groups:
+            group_chunks = []
+            current_chunk = []
+            current_length = 0
+            
+            for g in groups:
+                # Format requirements with proper handling
+                req_text = "None"
+                if g[3]:
+                    req_lines = [f"• {r}" for r in g[3][:5]]
+                    if len(g[3]) > 5:
+                        req_lines.append("• ...")
+                    req_text = "\n".join(req_lines)
+
+                # Format ping roles with proper handling
+                roles_text = "None"
+                if g[4]:
+                    roles = [f"<@&{r}>" for r in g[4][:5]]
+                    if len(g[4]) > 5:
+                        roles.append("...")
+                    roles_text = ", ".join(roles)
+
+                # Create the full group text
+                group_text = (
+                    f"**🎯 {g[2]}** (ID: `{g[0]}`)\n"
+                    f"📝 Description: {g[1][:200]}{'...' if len(g[1]) > 200 else ''}\n"
+                    f"📋 Requirements:\n{req_text}\n"
+                    f"🔔 Ping Roles: {roles_text}"
+                )
+                
+                # Check if adding this group would exceed the limit
+                if current_length + len(group_text) + 2 > 1000:  # Leave some margin
+                    group_chunks.append("\n\n".join(current_chunk))
+                    current_chunk = [group_text]
+                    current_length = len(group_text)
+                else:
+                    current_chunk.append(group_text)
+                    current_length += len(group_text) + 2  # +2 for the newlines
+            
+            if current_chunk:
+                group_chunks.append("\n\n".join(current_chunk))
+            
+            # Add group fields with proper chunking
+            for i, chunk in enumerate(group_chunks):
+                field_name = "🎯 Tryout Groups" if i == 0 else "🎯 Tryout Groups (Continued)"
+                embed.add_field(name=field_name, value=chunk, inline=False)
+        else:
+            embed.add_field(name="🎯 Tryout Groups", value="❌ No groups configured.", inline=False)
+        
+        allowed_vcs = await self.db.get_tryout_allowed_vcs(guild.id)
+        vc_display = ", ".join(f"<#{vc}>" for vc in allowed_vcs) if allowed_vcs else "❌ Not Set"
         embed.add_field(name="🔊 Allowed Voice Channels", value=vc_display, inline=False)
-        embed.set_footer(text="Use the buttons below to manage settings")
+        
+        embed.set_footer(text="Use the buttons below to manage settings • Some content may be truncated")
         return embed
 
     async def create_moderation_settings_embed(self, guild: discord.Guild) -> discord.Embed:
@@ -1321,6 +1364,376 @@ class AutopromotionChannelModal(discord.ui.Modal):
         await self.db.set_autopromotion_channel_id(self.guild.id, ch.id)
         await interaction.response.send_message(f"Autopromotion watch channel set to {ch.mention}.", ephemeral=True)
         await self.update_callback()
+
+class ModerationSettingsView(discord.ui.View):
+    def __init__(self, db, guild, settings_cog):
+        super().__init__(timeout=180)
+        self.db = db
+        self.guild = guild
+        self.settings_cog = settings_cog
+        self.message = None
+
+    @discord.ui.button(label="Set Log Channel", style=discord.ButtonStyle.primary, emoji="📌")
+    async def set_log_channel_btn(self, interaction: discord.Interaction, _):
+        if self.message:
+            await interaction.response.send_modal(BaseChannelModal(
+                db=self.db,
+                guild=self.guild,
+                setting_name='mod_log_channel_id',
+                update_callback=self.async_update_view,
+                settings_cog=self.settings_cog,
+                title="Set Moderation Log Channel"
+            ))
+
+    @discord.ui.button(label="Manage Allowed Roles", style=discord.ButtonStyle.primary, emoji="👥")
+    async def manage_allowed_roles_btn(self, interaction: discord.Interaction, _):
+        if self.message:
+            await interaction.response.send_modal(BaseRoleManagementModal(
+                db=self.db,
+                guild=self.guild,
+                update_callback=self.async_update_view,
+                add_method=self.db.add_moderation_allowed_role,
+                remove_method=self.db.remove_moderation_allowed_role,
+                success_title="Moderation Roles Updated",
+                settings_cog=self.settings_cog
+            ))
+
+    async def async_update_view(self):
+        if self.message:
+            try:
+                embed = await self.settings_cog.create_moderation_settings_embed(self.guild)
+                try:
+                    await self.message.edit(embed=embed, view=self)
+                except discord.NotFound:
+                    logger.debug("Could not update view: Message not found")
+                except discord.HTTPException as e:
+                    logger.debug(f"Could not update view: {e}")
+            except Exception as e:
+                logger.debug(f"Error in update_view: {e}")
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except:
+                pass
+
+class AutomodSettingsView(discord.ui.View):
+    def __init__(self, db, guild, settings_cog, page=1):
+        super().__init__(timeout=180)
+        self.db = db
+        self.guild = guild
+        self.settings_cog = settings_cog
+        self.page = page
+        self.message = None
+
+    @discord.ui.button(label="Toggle Automod", style=discord.ButtonStyle.primary, emoji="🔄")
+    async def toggle_automod_btn(self, interaction: discord.Interaction, _):
+        if self.message:
+            settings = await self.db.get_server_settings(self.guild.id)
+            current = settings.get('automod_enabled', False)
+            await self.db.update_server_setting(self.guild.id, 'automod_enabled', not current)
+            await self.async_update_view()
+            await interaction.response.send_message(
+                f"Automod {'disabled' if current else 'enabled'}.",
+                ephemeral=True
+            )
+
+    @discord.ui.button(label="Toggle Logging", style=discord.ButtonStyle.primary, emoji="📝")
+    async def toggle_logging_btn(self, interaction: discord.Interaction, _):
+        if self.message:
+            settings = await self.db.get_server_settings(self.guild.id)
+            current = settings.get('automod_logging_enabled', False)
+            await self.db.update_server_setting(self.guild.id, 'automod_logging_enabled', not current)
+            await self.async_update_view()
+            await interaction.response.send_message(
+                f"Automod logging {'disabled' if current else 'enabled'}.",
+                ephemeral=True
+            )
+
+    @discord.ui.button(label="Set Log Channel", style=discord.ButtonStyle.primary, emoji="📌")
+    async def set_log_channel_btn(self, interaction: discord.Interaction, _):
+        if self.message:
+            await interaction.response.send_modal(BaseChannelModal(
+                db=self.db,
+                guild=self.guild,
+                setting_name='automod_log_channel_id',
+                update_callback=self.async_update_view,
+                settings_cog=self.settings_cog,
+                title="Set Automod Log Channel"
+            ))
+
+    @discord.ui.button(label="Set Mute Duration", style=discord.ButtonStyle.primary, emoji="⏲️", row=1)
+    async def set_mute_duration_btn(self, interaction: discord.Interaction, _):
+        if self.message:
+            await interaction.response.send_modal(AutomodMuteDurationModal(
+                self.db,
+                self.guild,
+                self.async_update_view,
+                self.settings_cog
+            ))
+
+    @discord.ui.button(label="Manage Protected Users", style=discord.ButtonStyle.primary, emoji="🛡️", row=1)
+    async def manage_protected_users_btn(self, interaction: discord.Interaction, _):
+        if self.message:
+            await interaction.response.send_modal(AutomodProtectedUsersModal(
+                self.db,
+                self.guild,
+                self.async_update_view,
+                self.settings_cog
+            ))
+
+    @discord.ui.button(label="Manage Exempt Roles", style=discord.ButtonStyle.primary, emoji="👥", row=1)
+    async def manage_exempt_roles_btn(self, interaction: discord.Interaction, _):
+        if self.message:
+            await interaction.response.send_modal(BaseRoleManagementModal(
+                db=self.db,
+                guild=self.guild,
+                update_callback=self.async_update_view,
+                add_method=self.db.add_automod_exempt_role,
+                remove_method=self.db.remove_automod_exempt_role,
+                success_title="Exempt Roles Updated",
+                settings_cog=self.settings_cog
+            ))
+
+    @discord.ui.button(label="Set Spam Limit", style=discord.ButtonStyle.primary, emoji="🔢", row=2)
+    async def set_spam_limit_btn(self, interaction: discord.Interaction, _):
+        if self.message:
+            await interaction.response.send_modal(AutomodSpamLimitModal(
+                self.db,
+                self.guild,
+                self.async_update_view,
+                self.settings_cog
+            ))
+
+    @discord.ui.button(label="Set Spam Window", style=discord.ButtonStyle.primary, emoji="⌛", row=2)
+    async def set_spam_window_btn(self, interaction: discord.Interaction, _):
+        if self.message:
+            await interaction.response.send_modal(AutomodSpamWindowModal(
+                self.db,
+                self.guild,
+                self.async_update_view,
+                self.settings_cog
+            ))
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀️", row=3)
+    async def prev_page_btn(self, interaction: discord.Interaction, _):
+        if self.page > 1:
+            self.page -= 1
+            await self.async_update_view()
+            await interaction.response.defer()
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, emoji="▶️", row=3)
+    async def next_page_btn(self, interaction: discord.Interaction, _):
+        if self.page < 3:
+            self.page += 1
+            await self.async_update_view()
+            await interaction.response.defer()
+
+    async def async_update_view(self):
+        if self.message:
+            try:
+                settings = await self.db.get_server_settings(self.guild.id)
+                embed = await self.settings_cog.create_automod_settings_embed(settings, self.guild.id, self.page)
+                
+                # Update button states based on current page
+                self.prev_page_btn.disabled = (self.page <= 1)
+                self.next_page_btn.disabled = (self.page >= 3)
+                
+                try:
+                    await self.message.edit(embed=embed, view=self)
+                except discord.NotFound:
+                    logger.debug("Could not update view: Message not found")
+                except discord.HTTPException as e:
+                    logger.debug(f"Could not update view: {e}")
+            except Exception as e:
+                logger.debug(f"Error in update_view: {e}")
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except:
+                pass
+
+class AutomodMuteDurationModal(discord.ui.Modal):
+    duration = discord.ui.TextInput(
+        label="Mute Duration (seconds)",
+        placeholder="Enter duration in seconds (e.g., 300)",
+        required=True,
+        max_length=10
+    )
+
+    def __init__(self, db, guild, update_callback, settings_cog):
+        super().__init__(title="Set Automod Mute Duration")
+        self.db = db
+        self.guild = guild
+        self.update_callback = update_callback
+        self.settings_cog = settings_cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            duration = int(self.duration.value.strip())
+            if duration < 0:
+                raise ValueError("Duration must be positive")
+            
+            await self.db.set_automod_mute_duration(self.guild.id, duration)
+            await interaction.response.send_message(
+                f"Mute duration set to {duration} seconds.",
+                ephemeral=True
+            )
+            await self.update_callback()
+        except ValueError as e:
+            await interaction.response.send_message(
+                f"Invalid duration: {str(e)}",
+                ephemeral=True
+            )
+
+class AutomodProtectedUsersModal(discord.ui.Modal):
+    action = discord.ui.TextInput(
+        label="Action",
+        placeholder="add/remove",
+        required=True,
+        max_length=6
+    )
+    user_ids = discord.ui.TextInput(
+        label="User IDs",
+        placeholder="Enter user IDs separated by spaces",
+        required=True,
+        style=discord.TextStyle.paragraph
+    )
+
+    def __init__(self, db, guild, update_callback, settings_cog):
+        super().__init__(title="Manage Protected Users")
+        self.db = db
+        self.guild = guild
+        self.update_callback = update_callback
+        self.settings_cog = settings_cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        action = self.action.value.strip().lower()
+        if action not in ['add', 'remove']:
+            return await interaction.response.send_message(
+                "Invalid action. Use 'add' or 'remove'.",
+                ephemeral=True
+            )
+
+        user_ids = [x.strip() for x in self.user_ids.value.split() if x.strip()]
+        if not user_ids:
+            return await interaction.response.send_message(
+                "No user IDs provided.",
+                ephemeral=True
+            )
+
+        valid_ids = []
+        invalid_ids = []
+        for uid in user_ids:
+            if uid.isdigit():
+                try:
+                    user = await self.guild.fetch_member(int(uid))
+                    if user:
+                        valid_ids.append(int(uid))
+                    else:
+                        invalid_ids.append(uid)
+                except:
+                    invalid_ids.append(uid)
+            else:
+                invalid_ids.append(uid)
+
+        if invalid_ids:
+            return await interaction.response.send_message(
+                f"Invalid user IDs: {', '.join(invalid_ids)}",
+                ephemeral=True
+            )
+
+        try:
+            for uid in valid_ids:
+                if action == 'add':
+                    await self.db.add_protected_user(self.guild.id, uid)
+                else:
+                    await self.db.remove_protected_user(self.guild.id, uid)
+
+            users_str = ", ".join(f"<@{uid}>" for uid in valid_ids)
+            await interaction.response.send_message(
+                f"Successfully {action}ed users: {users_str}",
+                ephemeral=True
+            )
+            await self.update_callback()
+        except Exception as e:
+            await interaction.response.send_message(
+                f"Error managing protected users: {str(e)}",
+                ephemeral=True
+            )
+
+class AutomodSpamLimitModal(discord.ui.Modal):
+    limit = discord.ui.TextInput(
+        label="Message Limit",
+        placeholder="Enter max messages allowed (e.g., 5)",
+        required=True,
+        max_length=5
+    )
+
+    def __init__(self, db, guild, update_callback, settings_cog):
+        super().__init__(title="Set Spam Message Limit")
+        self.db = db
+        self.guild = guild
+        self.update_callback = update_callback
+        self.settings_cog = settings_cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            limit = int(self.limit.value.strip())
+            if limit < 1:
+                raise ValueError("Limit must be at least 1")
+            
+            await self.db.set_automod_spam_limit(self.guild.id, limit)
+            await interaction.response.send_message(
+                f"Spam message limit set to {limit}.",
+                ephemeral=True
+            )
+            await self.update_callback()
+        except ValueError as e:
+            await interaction.response.send_message(
+                f"Invalid limit: {str(e)}",
+                ephemeral=True
+            )
+
+class AutomodSpamWindowModal(discord.ui.Modal):
+    window = discord.ui.TextInput(
+        label="Time Window (seconds)",
+        placeholder="Enter time window in seconds (e.g., 10)",
+        required=True,
+        max_length=5
+    )
+
+    def __init__(self, db, guild, update_callback, settings_cog):
+        super().__init__(title="Set Spam Time Window")
+        self.db = db
+        self.guild = guild
+        self.update_callback = update_callback
+        self.settings_cog = settings_cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            window = int(self.window.value.strip())
+            if window < 1:
+                raise ValueError("Window must be at least 1 second")
+            
+            await self.db.set_automod_spam_window(self.guild.id, window)
+            await interaction.response.send_message(
+                f"Spam time window set to {window} seconds.",
+                ephemeral=True
+            )
+            await self.update_callback()
+        except ValueError as e:
+            await interaction.response.send_message(
+                f"Invalid window: {str(e)}",
+                ephemeral=True
+            )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Settings(bot))
