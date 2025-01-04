@@ -1611,9 +1611,57 @@ class AutomodSettingsView(discord.ui.View):
         self.settings_cog = settings_cog
         self.page = page
         self.message = None
+        self.setup_buttons()
 
-    @discord.ui.button(label="Toggle Automod", style=discord.ButtonStyle.primary, emoji="🔄")
-    async def toggle_automod_btn(self, interaction: discord.Interaction, _):
+    def setup_buttons(self):
+        # Page 1 buttons - General Settings
+        if self.page == 1:
+            toggle_automod = discord.ui.Button(label="Toggle Automod", style=discord.ButtonStyle.primary, emoji="🔄", row=0)
+            toggle_automod.callback = self.toggle_automod_btn
+            self.add_item(toggle_automod)
+
+            toggle_logging = discord.ui.Button(label="Toggle Logging", style=discord.ButtonStyle.primary, emoji="📝", row=0)
+            toggle_logging.callback = self.toggle_logging_btn
+            self.add_item(toggle_logging)
+
+            set_log_channel = discord.ui.Button(label="Set Log Channel", style=discord.ButtonStyle.primary, emoji="📌", row=0)
+            set_log_channel.callback = self.set_log_channel_btn
+            self.add_item(set_log_channel)
+
+        # Page 2 buttons - User Management
+        elif self.page == 2:
+            mute_duration = discord.ui.Button(label="Set Mute Duration", style=discord.ButtonStyle.primary, emoji="⏲️", row=0)
+            mute_duration.callback = self.set_mute_duration_btn
+            self.add_item(mute_duration)
+
+            protected_users = discord.ui.Button(label="Manage Protected Users", style=discord.ButtonStyle.primary, emoji="🛡️", row=0)
+            protected_users.callback = self.manage_protected_users_btn
+            self.add_item(protected_users)
+
+            exempt_roles = discord.ui.Button(label="Manage Exempt Roles", style=discord.ButtonStyle.primary, emoji="👥", row=0)
+            exempt_roles.callback = self.manage_exempt_roles_btn
+            self.add_item(exempt_roles)
+
+        # Page 3 buttons - Spam Settings
+        elif self.page == 3:
+            spam_limit = discord.ui.Button(label="Set Spam Limit", style=discord.ButtonStyle.primary, emoji="🔢", row=0)
+            spam_limit.callback = self.set_spam_limit_btn
+            self.add_item(spam_limit)
+
+            spam_window = discord.ui.Button(label="Set Spam Window", style=discord.ButtonStyle.primary, emoji="⌛", row=0)
+            spam_window.callback = self.set_spam_window_btn
+            self.add_item(spam_window)
+
+        # Navigation buttons (always show)
+        prev_button = discord.ui.Button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀️", row=1, disabled=(self.page <= 1))
+        prev_button.callback = self.prev_page_btn
+        self.add_item(prev_button)
+
+        next_button = discord.ui.Button(label="Next", style=discord.ButtonStyle.secondary, emoji="▶️", row=1, disabled=(self.page >= 3))
+        next_button.callback = self.next_page_btn
+        self.add_item(next_button)
+
+    async def toggle_automod_btn(self, interaction: discord.Interaction):
         if self.message:
             settings = await self.db.get_server_settings(self.guild.id)
             current = settings.get('automod_enabled', False)
@@ -1624,8 +1672,7 @@ class AutomodSettingsView(discord.ui.View):
                 ephemeral=True
             )
 
-    @discord.ui.button(label="Toggle Logging", style=discord.ButtonStyle.primary, emoji="📝")
-    async def toggle_logging_btn(self, interaction: discord.Interaction, _):
+    async def toggle_logging_btn(self, interaction: discord.Interaction):
         if self.message:
             settings = await self.db.get_server_settings(self.guild.id)
             current = settings.get('automod_logging_enabled', False)
@@ -1636,8 +1683,7 @@ class AutomodSettingsView(discord.ui.View):
                 ephemeral=True
             )
 
-    @discord.ui.button(label="Set Log Channel", style=discord.ButtonStyle.primary, emoji="📌")
-    async def set_log_channel_btn(self, interaction: discord.Interaction, _):
+    async def set_log_channel_btn(self, interaction: discord.Interaction):
         if self.message:
             await interaction.response.send_modal(BaseChannelModal(
                 db=self.db,
@@ -1648,8 +1694,7 @@ class AutomodSettingsView(discord.ui.View):
                 title="Set Automod Log Channel"
             ))
 
-    @discord.ui.button(label="Set Mute Duration", style=discord.ButtonStyle.primary, emoji="⏲️", row=1)
-    async def set_mute_duration_btn(self, interaction: discord.Interaction, _):
+    async def set_mute_duration_btn(self, interaction: discord.Interaction):
         if self.message:
             await interaction.response.send_modal(AutomodMuteDurationModal(
                 self.db,
@@ -1658,8 +1703,7 @@ class AutomodSettingsView(discord.ui.View):
                 self.settings_cog
             ))
 
-    @discord.ui.button(label="Manage Protected Users", style=discord.ButtonStyle.primary, emoji="🛡️", row=1)
-    async def manage_protected_users_btn(self, interaction: discord.Interaction, _):
+    async def manage_protected_users_btn(self, interaction: discord.Interaction):
         if self.message:
             await interaction.response.send_modal(AutomodProtectedUsersModal(
                 self.db,
@@ -1668,8 +1712,7 @@ class AutomodSettingsView(discord.ui.View):
                 self.settings_cog
             ))
 
-    @discord.ui.button(label="Manage Exempt Roles", style=discord.ButtonStyle.primary, emoji="👥", row=1)
-    async def manage_exempt_roles_btn(self, interaction: discord.Interaction, _):
+    async def manage_exempt_roles_btn(self, interaction: discord.Interaction):
         if self.message:
             await interaction.response.send_modal(BaseRoleManagementModal(
                 db=self.db,
@@ -1681,8 +1724,7 @@ class AutomodSettingsView(discord.ui.View):
                 settings_cog=self.settings_cog
             ))
 
-    @discord.ui.button(label="Set Spam Limit", style=discord.ButtonStyle.primary, emoji="🔢", row=2)
-    async def set_spam_limit_btn(self, interaction: discord.Interaction, _):
+    async def set_spam_limit_btn(self, interaction: discord.Interaction):
         if self.message:
             await interaction.response.send_modal(AutomodSpamLimitModal(
                 self.db,
@@ -1691,8 +1733,7 @@ class AutomodSettingsView(discord.ui.View):
                 self.settings_cog
             ))
 
-    @discord.ui.button(label="Set Spam Window", style=discord.ButtonStyle.primary, emoji="⌛", row=2)
-    async def set_spam_window_btn(self, interaction: discord.Interaction, _):
+    async def set_spam_window_btn(self, interaction: discord.Interaction):
         if self.message:
             await interaction.response.send_modal(AutomodSpamWindowModal(
                 self.db,
@@ -1701,17 +1742,19 @@ class AutomodSettingsView(discord.ui.View):
                 self.settings_cog
             ))
 
-    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀️", row=3)
-    async def prev_page_btn(self, interaction: discord.Interaction, _):
+    async def prev_page_btn(self, interaction: discord.Interaction):
         if self.page > 1:
             self.page -= 1
+            self.clear_items()  # Remove all current buttons
+            self.setup_buttons()  # Add buttons for the new page
             await self.async_update_view()
             await interaction.response.defer()
 
-    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, emoji="▶️", row=3)
-    async def next_page_btn(self, interaction: discord.Interaction, _):
+    async def next_page_btn(self, interaction: discord.Interaction):
         if self.page < 3:
             self.page += 1
+            self.clear_items()  # Remove all current buttons
+            self.setup_buttons()  # Add buttons for the new page
             await self.async_update_view()
             await interaction.response.defer()
 
@@ -1720,10 +1763,6 @@ class AutomodSettingsView(discord.ui.View):
             try:
                 settings = await self.db.get_server_settings(self.guild.id)
                 embed = await self.settings_cog.create_automod_settings_embed(settings, self.guild.id, self.page)
-                
-                # Update button states based on current page
-                self.prev_page_btn.disabled = (self.page <= 1)
-                self.next_page_btn.disabled = (self.page >= 3)
                 
                 try:
                     await self.message.edit(embed=embed, view=self)
