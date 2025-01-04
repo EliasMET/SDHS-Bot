@@ -407,557 +407,377 @@ class BaseVCManagementModal(discord.ui.Modal):
                 ephemeral=True
             )
 
-class ManageTryoutGroupsModal(discord.ui.Modal):
-    action = discord.ui.TextInput(label="Action", placeholder="add/edit/delete", required=True, max_length=10)
-    group_id = discord.ui.TextInput(label="Group ID", placeholder="numeric Group ID", required=True, max_length=20)
-    event_name = discord.ui.TextInput(label="Event Name", required=False, max_length=100)
-    description = discord.ui.TextInput(label="Description", style=discord.TextStyle.paragraph, required=False, max_length=2000)
-    requirements = discord.ui.TextInput(
-        label="Requirements & Ping Roles", 
-        placeholder="Requirements: one per line\nPing Roles: start with @role_id, e.g. @123456789", 
-        required=False, 
-        style=discord.TextStyle.paragraph
-    )
-
-    def __init__(self, db, guild, update_callback, settings_cog):
-        super().__init__(title="Manage Tryout Groups")
-        self.db = db
-        self.guild = guild
-        self.update_callback = update_callback
-        self.settings_cog = settings_cog
-
-    async def on_submit(self, interaction: discord.Interaction):
-        act = self.action.value.strip().lower()
-        gid = self.group_id.value.strip()
-        if act not in ['add','edit','delete']:
-            return await interaction.response.send_message(embed=discord.Embed(title="Invalid Action", description="Use add/edit/delete.", color=0xE02B2B), ephemeral=True)
-        if not gid.isdigit():
-            return await interaction.response.send_message(embed=discord.Embed(title="Invalid Group ID", description="Must be numeric.", color=0xE02B2B), ephemeral=True)
-
-        try:
-            reqs = []
-            ping_roles = []
-            if self.requirements.value and self.requirements.value.strip():
-                for line in self.requirements.value.strip().split('\n'):
-                    line = line.strip()
-                    if line.startswith('@'):
-                        # This is a ping role
-                        role_id = line[1:].strip()  # Remove the @ symbol
-                        if role_id.isdigit():
-                            role = self.guild.get_role(int(role_id))
-                            if role:
-                                ping_roles.append(str(role.id))
-                    elif line:  # If line is not empty
-                        reqs.append(line)
-
-            if act == 'add':
-                if not (self.event_name.value and self.event_name.value.strip() and 
-                        self.description.value and self.description.value.strip()):
-                    return await interaction.response.send_message(embed=discord.Embed(title="Missing Info", description="Provide event name and description for adding.", color=0xE02B2B), ephemeral=True)
-                if await self.db.get_tryout_group(self.guild.id, gid):
-                    return await interaction.response.send_message(embed=discord.Embed(title="Group Exists", description="This ID already exists.", color=0xE02B2B), ephemeral=True)
-                
-                # Create the group with requirements and ping roles
-                await self.db.add_tryout_group(
-                    self.guild.id, gid, 
-                    self.description.value.strip(), 
-                    self.event_name.value.strip(),
-                    requirements=reqs
-                )
-                
-                # Add ping roles if any
-                for role_id in ping_roles:
-                    await self.db.add_group_ping_role(self.guild.id, gid, int(role_id))
-
-                # Format ping roles for display
-                ping_roles_display = "\n".join(f"<@&{rid}>" for rid in ping_roles) if ping_roles else "None"
-                
-                embed = discord.Embed(
-                    title="Group Added",
-                    description=(
-                        f"Added group: {self.event_name.value.strip()} (ID: {gid})\n"
-                        f"Requirements: {len(reqs)}\n"
-                        f"Ping Roles:\n{ping_roles_display}"
-                    ),
-                    color=discord.Color.green()
-                )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-
-            elif act == 'edit':
-                ex = await self.db.get_tryout_group(self.guild.id, gid)
-                if not ex:
-                    return await interaction.response.send_message(embed=discord.Embed(title="Not Found", description="No such group.", color=0xE02B2B), ephemeral=True)
-
-                e_name = self.event_name.value.strip() or ex[2]
-                desc = self.description.value.strip() or ex[1]
-                final_requirements = reqs if self.requirements.value and reqs else ex[3]
-
-                # Update the group
-                await self.db.update_tryout_group(self.guild.id, gid, desc, e_name, final_requirements)
-
-                # Update ping roles if provided
-                if self.requirements.value:  # Only update ping roles if requirements field was filled
-                    # Remove existing ping roles
-                    existing_roles = ex[4]
-                    for role_id in existing_roles:
-                        await self.db.remove_group_ping_role(self.guild.id, gid, int(role_id))
-                    # Add new ping roles
-                    for role_id in ping_roles:
-                        await self.db.add_group_ping_role(self.guild.id, gid, int(role_id))
-
-                # Format ping roles for display
-                final_ping_roles = ping_roles if self.requirements.value else ex[4]
-                ping_roles_display = "\n".join(f"<@&{rid}>" for rid in final_ping_roles) if final_ping_roles else "None"
-
-                embed = discord.Embed(
-                    title="Group Updated",
-                    description=(
-                        f"Updated group: {e_name} (ID: {gid})\n"
-                        f"Requirements: {len(final_requirements)}\n"
-                        f"Ping Roles:\n{ping_roles_display}"
-                    ),
-                    color=discord.Color.green()
-                )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-
-            else:  # delete
-                if not await self.db.get_tryout_group(self.guild.id, gid):
-                    return await interaction.response.send_message(embed=discord.Embed(title="Not Found", description="No such group.", color=0xE02B2B), ephemeral=True)
-                await self.db.delete_tryout_group(self.guild.id, gid)
-                await interaction.response.send_message(
-                    embed=discord.Embed(title="Group Deleted", description=f"Deleted group ID {gid}", color=discord.Color.green()),
-                    ephemeral=True
-                )
-
-            # Update the original settings embed
-            if self.update_callback:
-                await self.update_callback()
-                
-            # Also update the original interaction message if it exists
-            if hasattr(interaction, 'message') and interaction.message:
-                try:
-                    new_embed = await self.settings_cog.create_tryout_settings_embed(self.guild)
-                    await interaction.message.edit(embed=new_embed)
-                except:
-                    pass  # Silently fail if we can't update the original message
-
-        except Exception as e:
-            logger.error("Error in ManageTryoutGroupsModal on_submit:")
-            traceback.print_exc()
-            await interaction.response.send_message(
-                embed=discord.Embed(title="Error", description=f"Try again later: {e}", color=0xE02B2B),
-                ephemeral=True
-            )
-
-class AutomodMuteDurationModal(discord.ui.Modal):
-    duration = discord.ui.TextInput(label="Mute Duration (seconds)", placeholder="3600", required=True, max_length=10)
-
-    def __init__(self, db, guild, update_callback, settings_cog):
-        super().__init__(title="Set Automod Mute Duration")
-        self.db = db
-        self.guild = guild
-        self.update_callback = update_callback
-        self.settings_cog = settings_cog
-
-    async def on_submit(self, interaction: discord.Interaction):
-        d = self.duration.value.strip()
-        if not d.isdigit() or int(d) <= 0:
-            return await interaction.response.send_message(
-                embed=discord.Embed(title="Invalid Duration", description="Enter a positive number.", color=0xE02B2B),
-                ephemeral=True
-            )
-        try:
-            await self.db.set_automod_mute_duration(self.guild.id, int(d))
-            await interaction.response.send_message(
-                embed=discord.Embed(title="Mute Duration Set", description=f"Set to {d} seconds.", color=discord.Color.green()),
-                ephemeral=True
-            )
-            await self.update_callback()
-        except Exception as e:
-            logger.error("Error in AutomodMuteDurationModal on_submit:")
-            traceback.print_exc()
-            await interaction.response.send_message(
-                embed=discord.Embed(title="Error", description=f"Failed to set mute duration: {e}", color=0xE02B2B),
-                ephemeral=True
-            )
-
-class AutomodProtectedUsersModal(discord.ui.Modal):
-    action = discord.ui.TextInput(label="Action", placeholder="add/remove", required=True, max_length=6)
-    user_ids = discord.ui.TextInput(label="User IDs", placeholder="IDs separated by spaces", required=True, style=discord.TextStyle.paragraph, max_length=2000)
-
-    def __init__(self, db, guild, update_callback, add_method, remove_method, success_title, settings_cog):
-        super().__init__(title=success_title)
-        self.db = db
-        self.guild = guild
-        self.update_callback = update_callback
-        self.add_method = add_method
-        self.remove_method = remove_method
-        self.success_title = success_title
-        self.settings_cog = settings_cog
-
-    async def on_submit(self, interaction: discord.Interaction):
-        act = self.action.value.strip().lower()
-        if act not in ['add','remove']:
-            return await interaction.response.send_message(
-                embed=discord.Embed(title="Invalid Action", description="Use 'add' or 'remove'.", color=0xE02B2B),
-                ephemeral=True
-            )
-
-        ids = [x for x in self.user_ids.value.strip().split() if x.strip()]
-        if not ids:
-            return await interaction.response.send_message(
-                embed=discord.Embed(title="No User IDs", description="Provide at least one user ID.", color=0xE02B2B),
-                ephemeral=True
-            )
-
-        valid, invalid = [], []
-        for uid in ids:
-            if uid.isdigit():
-                valid.append(int(uid))
-            else:
-                invalid.append(uid)
-
-        if invalid:
-            return await interaction.response.send_message(
-                embed=discord.Embed(title="Invalid User IDs", description=", ".join(invalid), color=0xE02B2B),
-                ephemeral=True
-            )
-
-        try:
-            method = self.add_method if act == 'add' else self.remove_method
-            for u in valid:
-                await method(self.guild.id, u)
-
-            ud = ", ".join(f"<@{u}>" for u in valid)
-            await interaction.response.send_message(
-                embed=discord.Embed(title=self.success_title, description=f"Successfully {act}ed: {ud}", color=discord.Color.green()),
-                ephemeral=True
-            )
-            await self.update_callback()
-        except Exception as e:
-            logger.error("Error in AutomodProtectedUsersModal on_submit:")
-            traceback.print_exc()
-            await interaction.response.send_message(
-                embed=discord.Embed(title="Error", description=f"Failed to manage users: {e}", color=0xE02B2B),
-                ephemeral=True
-            )
-
-# New modals for spam settings
-class AutomodSpamLimitModal(discord.ui.Modal):
-    limit = discord.ui.TextInput(label="Spam Message Limit", placeholder="5", required=True, max_length=5)
-
-    def __init__(self, db, guild, update_callback, settings_cog):
-        super().__init__(title="Set Automod Spam Message Limit")
-        self.db = db
-        self.guild = guild
-        self.update_callback = update_callback
-        self.settings_cog = settings_cog
-
-    async def on_submit(self, interaction: discord.Interaction):
-        val = self.limit.value.strip()
-        if not val.isdigit() or int(val) <= 0:
-            return await interaction.response.send_message(
-                embed=discord.Embed(title="Invalid Limit", description="Enter a positive number.", color=0xE02B2B),
-                ephemeral=True
-            )
-        try:
-            await self.db.set_automod_spam_limit(self.guild.id, int(val))
-            await interaction.response.send_message(
-                embed=discord.Embed(title="Spam Limit Set", description=f"Set to {val} messages.", color=discord.Color.green()),
-                ephemeral=True
-            )
-            await self.update_callback()
-        except Exception as e:
-            logger.error("Error in AutomodSpamLimitModal on_submit:")
-            traceback.print_exc()
-            await interaction.response.send_message(
-                embed=discord.Embed(title="Error", description=f"Failed to set spam limit: {e}", color=0xE02B2B),
-                ephemeral=True
-            )
-
-class AutomodSpamWindowModal(discord.ui.Modal):
-    window = discord.ui.TextInput(label="Spam Time Window (seconds)", placeholder="5", required=True, max_length=5)
-
-    def __init__(self, db, guild, update_callback, settings_cog):
-        super().__init__(title="Set Automod Spam Time Window")
-        self.db = db
-        self.guild = guild
-        self.update_callback = update_callback
-        self.settings_cog = settings_cog
-
-    async def on_submit(self, interaction: discord.Interaction):
-        val = self.window.value.strip()
-        if not val.isdigit() or int(val) <= 0:
-            return await interaction.response.send_message(
-                embed=discord.Embed(title="Invalid Window", description="Enter a positive number.", color=0xE02B2B),
-                ephemeral=True
-            )
-        try:
-            await self.db.set_automod_spam_window(self.guild.id, int(val))
-            await interaction.response.send_message(
-                embed=discord.Embed(title="Spam Time Window Set", description=f"Set to {val} seconds.", color=discord.Color.green()),
-                ephemeral=True
-            )
-            await self.update_callback()
-        except Exception as e:
-            logger.error("Error in AutomodSpamWindowModal on_submit:")
-            traceback.print_exc()
-            await interaction.response.send_message(
-                embed=discord.Embed(title="Error", description=f"Failed to set spam time window: {e}", color=0xE02B2B),
-                ephemeral=True
-            )
-
-class AutomodSettingsView(discord.ui.View):
-    def __init__(self, db, guild, settings_cog, page=1):
-        super().__init__(timeout=180)
-        self.db = db
-        self.guild = guild
-        self.settings_cog = settings_cog
-        self.page = page
-        self.message = None
-        self.update_buttons()
-
-    def update_buttons(self):
-        # Clear all buttons first
-        self.clear_items()
-
-        # Add navigation buttons
-        prev_button = discord.ui.Button(
-            label="◀ Previous Page",
-            style=discord.ButtonStyle.secondary,
-            disabled=(self.page <= 1),
-            custom_id="prev_page"
-        )
-        next_button = discord.ui.Button(
-            label="Next Page ▶",
-            style=discord.ButtonStyle.secondary,
-            disabled=(self.page >= 3),
-            custom_id="next_page"
-        )
-        prev_button.callback = self.previous_page_btn
-        next_button.callback = self.next_page_btn
-        self.add_item(prev_button)
-        self.add_item(next_button)
-
-        # Add page-specific buttons
-        if self.page == 1:
-            # Page 1: General Settings
-            toggle_automod = discord.ui.Button(
-                label="Toggle Automod",
-                style=discord.ButtonStyle.primary,
-                emoji="🔄",
-                custom_id="toggle_automod"
-            )
-            toggle_logging = discord.ui.Button(
-                label="Toggle Logging",
-                style=discord.ButtonStyle.primary,
-                emoji="📝",
-                custom_id="toggle_logging"
-            )
-            set_log_channel = discord.ui.Button(
-                label="Set Log Channel",
-                style=discord.ButtonStyle.primary,
-                emoji="📌",
-                custom_id="set_log_channel"
-            )
-            toggle_automod.callback = self.toggle_automod_btn
-            toggle_logging.callback = self.toggle_logging_btn
-            set_log_channel.callback = self.set_log_channel_btn
-            
-            self.add_item(toggle_automod)
-            self.add_item(toggle_logging)
-            self.add_item(set_log_channel)
-
-        elif self.page == 2:
-            # Page 2: Protection Settings
-            mute_duration = discord.ui.Button(
-                label="Set Mute Duration",
-                style=discord.ButtonStyle.primary,
-                emoji="⏱",
-                custom_id="set_mute_duration"
-            )
-            protected_users = discord.ui.Button(
-                label="Manage Protected Users",
-                style=discord.ButtonStyle.primary,
-                emoji="👤",
-                custom_id="manage_protected_users"
-            )
-            exempt_roles = discord.ui.Button(
-                label="Manage Exempt Roles",
-                style=discord.ButtonStyle.primary,
-                emoji="🛡",
-                custom_id="manage_exempt_roles"
-            )
-            mute_duration.callback = self.set_mute_duration_btn
-            protected_users.callback = self.manage_protected_users_btn
-            exempt_roles.callback = self.manage_exempt_roles_btn
-            
-            self.add_item(mute_duration)
-            self.add_item(protected_users)
-            self.add_item(exempt_roles)
-
-        elif self.page == 3:
-            # Page 3: Spam Settings
-            spam_limit = discord.ui.Button(
-                label="Set Spam Limit",
-                style=discord.ButtonStyle.primary,
-                emoji="📑",
-                custom_id="set_spam_limit"
-            )
-            spam_window = discord.ui.Button(
-                label="Set Spam Window",
-                style=discord.ButtonStyle.primary,
-                emoji="⏳",
-                custom_id="set_spam_window"
-            )
-            spam_limit.callback = self.set_spam_limit_btn
-            spam_window.callback = self.set_spam_window_btn
-            
-            self.add_item(spam_limit)
-            self.add_item(spam_window)
-
-    async def previous_page_btn(self, interaction: discord.Interaction):
-        if self.page > 1:
-            await interaction.response.defer()
-            self.page -= 1
-            self.update_buttons()
-            await self.async_update_view()
-
-    async def next_page_btn(self, interaction: discord.Interaction):
-        if self.page < 3:
-            await interaction.response.defer()
-            self.page += 1
-            self.update_buttons()
-            await self.async_update_view()
-
-    async def toggle_automod_btn(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        await self.db.toggle_server_setting(self.guild.id, 'automod_enabled')
-        await self.async_update_view()
-
-    async def toggle_logging_btn(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        await self.db.toggle_server_setting(self.guild.id, 'automod_logging_enabled')
-        await self.async_update_view()
-
-    async def set_log_channel_btn(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(BaseChannelModal(
-            db=self.db,
-            guild=self.guild,
-            setting_name='automod_log_channel_id',
-            update_callback=self.async_update_view,
-            settings_cog=self.settings_cog,
-            title="Set Automod Log Channel"
-        ))
-
-    async def set_mute_duration_btn(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(AutomodMuteDurationModal(
-            db=self.db,
-            guild=self.guild,
-            update_callback=self.async_update_view,
-            settings_cog=self.settings_cog
-        ))
-
-    async def manage_protected_users_btn(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(AutomodProtectedUsersModal(
-            db=self.db,
-            guild=self.guild,
-            update_callback=self.async_update_view,
-            add_method=self.db.add_protected_user,
-            remove_method=self.db.remove_protected_user,
-            success_title="Protected Users Updated",
-            settings_cog=self.settings_cog
-        ))
-
-    async def manage_exempt_roles_btn(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(BaseRoleManagementModal(
-            db=self.db,
-            guild=self.guild,
-            update_callback=self.async_update_view,
-            add_method=self.db.add_automod_exempt_role,
-            remove_method=self.db.remove_automod_exempt_role,
-            success_title="Exempt Roles Updated",
-            settings_cog=self.settings_cog
-        ))
-
-    async def set_spam_limit_btn(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(AutomodSpamLimitModal(
-            db=self.db,
-            guild=self.guild,
-            update_callback=self.async_update_view,
-            settings_cog=self.settings_cog
-        ))
-
-    async def set_spam_window_btn(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(AutomodSpamWindowModal(
-            db=self.db,
-            guild=self.guild,
-            update_callback=self.async_update_view,
-            settings_cog=self.settings_cog
-        ))
-
-    async def async_update_view(self):
-        if self.message:
-            s = await self.db.get_server_settings(self.guild.id)
-            e = await self.settings_cog.create_automod_settings_embed(s, self.guild.id, self.page)
-            await self.message.edit(embed=e, view=self)
-
-    async def on_timeout(self):
-        for child in self.children:
-            child.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except:
-                pass
-
-class ModerationSettingsView(discord.ui.View):
+class TryoutGroupSelectView(discord.ui.View):
     def __init__(self, db, guild, settings_cog):
         super().__init__(timeout=180)
         self.db = db
         self.guild = guild
         self.settings_cog = settings_cog
         self.message = None
+        self.add_group_select()
 
-    @discord.ui.button(label="Set Log Channel", style=discord.ButtonStyle.primary, emoji="📌")
-    async def set_log_channel_btn(self, interaction: discord.Interaction, _):
+    def add_group_select(self):
+        select = discord.ui.Select(
+            placeholder="Select a group to edit or create new",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(
+                    label="➕ Create New Group",
+                    value="new",
+                    description="Create a new tryout group",
+                    emoji="➕"
+                )
+            ]
+        )
+        select.callback = self.group_select_callback
+        self.add_item(select)
+        self.group_select = select
+
+    async def update_group_options(self):
+        groups = await self.db.get_tryout_groups(self.guild.id)
+        options = [
+            discord.SelectOption(
+                label=f"{g[2]}",  # event_name
+                value=g[0],  # group_id
+                description=f"ID: {g[0]}",
+                emoji="🎯"
+            )
+            for g in groups
+        ]
+        options.insert(0, discord.SelectOption(
+            label="➕ Create New Group",
+            value="new",
+            description="Create a new tryout group",
+            emoji="➕"
+        ))
+        self.group_select.options = options
+
+    async def group_select_callback(self, interaction: discord.Interaction):
+        selected_value = self.group_select.values[0]
+        
+        if selected_value == "new":
+            # Show modal for new group creation
+            modal = NewTryoutGroupModal(self.db, self.guild, self.update_view, self.settings_cog)
+            await interaction.response.send_modal(modal)
+        else:
+            # Show management view for existing group
+            group = await self.db.get_tryout_group(self.guild.id, selected_value)
+            if group:
+                view = GroupManagementView(self.db, self.guild, group, self.update_view, self.settings_cog)
+                embed = await view.create_group_embed()
+                await interaction.response.edit_message(embed=embed, view=view)
+
+    async def update_view(self):
         if self.message:
-            await interaction.response.send_modal(BaseChannelModal(
-                db=self.db,
-                guild=self.guild,
-                setting_name='mod_log_channel_id',
-                update_callback=self.async_update_view,
-                settings_cog=self.settings_cog,
-                title="Set Moderation Log Channel"
-            ))
+            await self.update_group_options()
+            embed = await self.settings_cog.create_tryout_settings_embed(self.guild)
+            await self.message.edit(embed=embed, view=self)
 
-    @discord.ui.button(label="Manage Allowed Roles", style=discord.ButtonStyle.primary, emoji="👥")
-    async def manage_allowed_roles_btn(self, interaction: discord.Interaction, _):
+class NewTryoutGroupModal(discord.ui.Modal):
+    group_id = discord.ui.TextInput(
+        label="Group ID",
+        placeholder="Enter numeric group ID",
+        required=True,
+        max_length=20
+    )
+    event_name = discord.ui.TextInput(
+        label="Event Name",
+        placeholder="Enter event name",
+        required=True,
+        max_length=100
+    )
+    description = discord.ui.TextInput(
+        label="Description",
+        placeholder="Enter group description",
+        required=True,
+        style=discord.TextStyle.paragraph,
+        max_length=2000
+    )
+
+    def __init__(self, db, guild, update_callback, settings_cog):
+        super().__init__(title="Create New Tryout Group")
+        self.db = db
+        self.guild = guild
+        self.update_callback = update_callback
+        self.settings_cog = settings_cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            gid = self.group_id.value.strip()
+            if not gid.isdigit():
+                return await interaction.response.send_message(
+                    embed=discord.Embed(title="Invalid ID", description="Group ID must be numeric.", color=0xE02B2B),
+                    ephemeral=True
+                )
+
+            if await self.db.get_tryout_group(self.guild.id, gid):
+                return await interaction.response.send_message(
+                    embed=discord.Embed(title="Group Exists", description="This ID already exists.", color=0xE02B2B),
+                    ephemeral=True
+                )
+
+            await self.db.add_tryout_group(
+                self.guild.id,
+                gid,
+                self.description.value.strip(),
+                self.event_name.value.strip(),
+                requirements=[]
+            )
+
+            embed = discord.Embed(
+                title="Group Created",
+                description=f"Created group: {self.event_name.value.strip()} (ID: {gid})",
+                color=discord.Color.green()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await self.update_callback()
+
+        except Exception as e:
+            logger.error(f"Error creating group: {e}")
+            await interaction.response.send_message(
+                embed=discord.Embed(title="Error", description=str(e), color=0xE02B2B),
+                ephemeral=True
+            )
+
+class GroupManagementView(discord.ui.View):
+    def __init__(self, db, guild, group, update_callback, settings_cog):
+        super().__init__(timeout=180)
+        self.db = db
+        self.guild = guild
+        self.group = group
+        self.update_callback = update_callback
+        self.settings_cog = settings_cog
+        self.message = None
+
+    async def create_group_embed(self) -> discord.Embed:
+        group_id, description, event_name, requirements, ping_roles = self.group
+        req_text = "\n".join(f"• {r}" for r in requirements) if requirements else "None"
+        roles_text = "\n".join(f"• <@&{r}>" for r in ping_roles) if ping_roles else "None"
+
+        embed = discord.Embed(
+            title=f"🎯 {event_name}",
+            description=description,
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Group ID", value=group_id, inline=False)
+        embed.add_field(name="Requirements", value=req_text, inline=False)
+        embed.add_field(name="Ping Roles", value=roles_text, inline=False)
+        return embed
+
+    @discord.ui.button(label="Edit Name", style=discord.ButtonStyle.primary, emoji="✏️", row=0)
+    async def edit_name_btn(self, interaction: discord.Interaction, _):
+        modal = EditGroupNameModal(self.db, self.guild, self.group, self.update_view, self.settings_cog)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Edit Description", style=discord.ButtonStyle.primary, emoji="📝", row=0)
+    async def edit_description_btn(self, interaction: discord.Interaction, _):
+        modal = EditGroupDescriptionModal(self.db, self.guild, self.group, self.update_view, self.settings_cog)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Edit Requirements", style=discord.ButtonStyle.primary, emoji="📋", row=1)
+    async def edit_requirements_btn(self, interaction: discord.Interaction, _):
+        modal = EditGroupRequirementsModal(self.db, self.guild, self.group, self.update_view, self.settings_cog)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Edit Ping Roles", style=discord.ButtonStyle.primary, emoji="🔔", row=1)
+    async def edit_ping_roles_btn(self, interaction: discord.Interaction, _):
+        modal = EditGroupPingRolesModal(self.db, self.guild, self.group, self.update_view, self.settings_cog)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Delete Group", style=discord.ButtonStyle.danger, emoji="🗑️", row=2)
+    async def delete_group_btn(self, interaction: discord.Interaction, _):
+        await self.db.delete_tryout_group(self.guild.id, self.group[0])
+        embed = discord.Embed(
+            title="Group Deleted",
+            description=f"Deleted group: {self.group[2]} (ID: {self.group[0]})",
+            color=discord.Color.red()
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        await self.update_callback()
+
+    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary, emoji="◀️", row=2)
+    async def back_btn(self, interaction: discord.Interaction, _):
+        view = TryoutGroupSelectView(self.db, self.guild, self.settings_cog)
+        await view.update_group_options()
+        embed = await self.settings_cog.create_tryout_settings_embed(self.guild)
+        await interaction.response.edit_message(embed=embed, view=view)
+        view.message = interaction.message
+
+    async def update_view(self):
         if self.message:
-            await interaction.response.send_modal(BaseRoleManagementModal(
-                db=self.db,
-                guild=self.guild,
-                update_callback=self.async_update_view,
-                add_method=self.db.add_moderation_allowed_role,
-                remove_method=self.db.remove_moderation_allowed_role,
-                success_title="Allowed Roles Updated",
-                settings_cog=self.settings_cog
-            ))
+            self.group = await self.db.get_tryout_group(self.guild.id, self.group[0])
+            if self.group:
+                embed = await self.create_group_embed()
+                await self.message.edit(embed=embed, view=self)
+            await self.update_callback()
 
-    async def async_update_view(self):
-        if self.message:
-            e = await self.settings_cog.create_moderation_settings_embed(self.guild)
-            await self.message.edit(embed=e, view=self)
+class EditGroupNameModal(discord.ui.Modal):
+    name = discord.ui.TextInput(
+        label="Event Name",
+        placeholder="Enter new event name",
+        required=True,
+        max_length=100
+    )
 
-    async def on_timeout(self):
-        for c in self.children:
-            c.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except:
-                pass
+    def __init__(self, db, guild, group, update_callback, settings_cog):
+        super().__init__(title=f"Edit Group Name - {group[2]}")
+        self.db = db
+        self.guild = guild
+        self.group = group
+        self.update_callback = update_callback
+        self.settings_cog = settings_cog
 
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.db.update_tryout_group(
+            self.guild.id,
+            self.group[0],
+            self.group[1],
+            self.name.value.strip(),
+            self.group[3]
+        )
+        embed = discord.Embed(
+            title="Name Updated",
+            description=f"Updated group name to: {self.name.value.strip()}",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await self.update_callback()
+
+class EditGroupDescriptionModal(discord.ui.Modal):
+    description = discord.ui.TextInput(
+        label="Description",
+        placeholder="Enter new description",
+        required=True,
+        style=discord.TextStyle.paragraph,
+        max_length=2000
+    )
+
+    def __init__(self, db, guild, group, update_callback, settings_cog):
+        super().__init__(title=f"Edit Description - {group[2]}")
+        self.db = db
+        self.guild = guild
+        self.group = group
+        self.update_callback = update_callback
+        self.settings_cog = settings_cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.db.update_tryout_group(
+            self.guild.id,
+            self.group[0],
+            self.description.value.strip(),
+            self.group[2],
+            self.group[3]
+        )
+        embed = discord.Embed(
+            title="Description Updated",
+            description="Group description has been updated.",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await self.update_callback()
+
+class EditGroupRequirementsModal(discord.ui.Modal):
+    requirements = discord.ui.TextInput(
+        label="Requirements",
+        placeholder="Enter requirements (one per line)",
+        required=True,
+        style=discord.TextStyle.paragraph,
+        max_length=2000
+    )
+
+    def __init__(self, db, guild, group, update_callback, settings_cog):
+        super().__init__(title=f"Edit Requirements - {group[2]}")
+        self.db = db
+        self.guild = guild
+        self.group = group
+        self.update_callback = update_callback
+        self.settings_cog = settings_cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        reqs = [r.strip() for r in self.requirements.value.strip().split('\n') if r.strip()]
+        await self.db.update_tryout_group(
+            self.guild.id,
+            self.group[0],
+            self.group[1],
+            self.group[2],
+            reqs
+        )
+        embed = discord.Embed(
+            title="Requirements Updated",
+            description=f"Updated requirements for group: {self.group[2]}",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await self.update_callback()
+
+class EditGroupPingRolesModal(discord.ui.Modal):
+    roles = discord.ui.TextInput(
+        label="Ping Roles",
+        placeholder="Enter role IDs (one per line)",
+        required=True,
+        style=discord.TextStyle.paragraph,
+        max_length=2000
+    )
+
+    def __init__(self, db, guild, group, update_callback, settings_cog):
+        super().__init__(title=f"Edit Ping Roles - {group[2]}")
+        self.db = db
+        self.guild = guild
+        self.group = group
+        self.update_callback = update_callback
+        self.settings_cog = settings_cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            # Remove existing roles
+            for role_id in self.group[4]:
+                await self.db.remove_group_ping_role(self.guild.id, self.group[0], int(role_id))
+
+            # Add new roles
+            valid_roles = []
+            invalid_roles = []
+            for role_id in self.roles.value.strip().split('\n'):
+                role_id = role_id.strip()
+                if role_id.isdigit():
+                    role = self.guild.get_role(int(role_id))
+                    if role:
+                        valid_roles.append(role.id)
+                        await self.db.add_group_ping_role(self.guild.id, self.group[0], role.id)
+                    else:
+                        invalid_roles.append(role_id)
+                elif role_id:  # Only add to invalid if it's not empty
+                    invalid_roles.append(role_id)
+
+            # Create response embed
+            embed = discord.Embed(
+                title="Ping Roles Updated",
+                color=discord.Color.green()
+            )
+            if valid_roles:
+                embed.add_field(
+                    name="Added Roles",
+                    value="\n".join(f"<@&{rid}>" for rid in valid_roles),
+                    inline=False
+                )
+            if invalid_roles:
+                embed.add_field(
+                    name="Invalid IDs",
+                    value="\n".join(invalid_roles),
+                    inline=False
+                )
+
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await self.update_callback()
+
+        except Exception as e:
+            logger.error(f"Error updating ping roles: {e}")
+            await interaction.response.send_message(
+                embed=discord.Embed(title="Error", description=str(e), color=0xE02B2B),
+                ephemeral=True
+            )
+
+# Update the TryoutSettingsView to use the new group management
 class TryoutSettingsView(discord.ui.View):
     def __init__(self, db, guild, settings_cog):
         super().__init__(timeout=180)
@@ -994,12 +814,11 @@ class TryoutSettingsView(discord.ui.View):
     @discord.ui.button(label="Manage Tryout Groups", style=discord.ButtonStyle.primary, emoji="🔧")
     async def manage_tryout_groups_btn(self, interaction: discord.Interaction, _):
         if self.message:
-            await interaction.response.send_modal(ManageTryoutGroupsModal(
-                db=self.db,
-                guild=self.guild,
-                update_callback=self.async_update_view,
-                settings_cog=self.settings_cog
-            ))
+            view = TryoutGroupSelectView(self.db, self.guild, self.settings_cog)
+            await view.update_group_options()
+            embed = await self.settings_cog.create_tryout_settings_embed(self.guild)
+            await interaction.response.edit_message(embed=embed, view=view)
+            view.message = interaction.message
 
     @discord.ui.button(label="Manage Allowed Voice Channels", style=discord.ButtonStyle.primary, emoji="🔊")
     async def manage_allowed_vcs_btn(self, interaction: discord.Interaction, _):
