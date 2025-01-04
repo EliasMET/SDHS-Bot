@@ -424,13 +424,9 @@ class Moderation(commands.Cog, name="moderation"):
                     return await interaction.followup.send(embed=e_err, ephemeral=True)
                 expires_at_dt = datetime.utcnow() + timedelta(seconds=secs)
 
-            # DM embed
-            dm_embed = discord.Embed(
-                description=reason,
-                color=discord.Color.red()
-            )
+            # DM message
             try:
-                await member.send(embed=dm_embed)
+                await member.send(f"You have been banned from the Homeland Security main server for {reason} - it is linked to one of our guideline statements")
             except (discord.Forbidden, discord.HTTPException) as e:
                 self.logger.warning(f"Could not DM user {member.id} after auto-ban: {e}")
 
@@ -1829,6 +1825,7 @@ class Moderation(commands.Cog, name="moderation"):
                 
         except Exception as e:
             self.logger.error(f"Error syncing global bans for guild {guild.id}: {e}")
+            return [], []
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild):
