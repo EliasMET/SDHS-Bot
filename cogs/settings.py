@@ -660,11 +660,20 @@ class GroupManagementView(discord.ui.View):
 
     async def update_view(self):
         if self.message:
-            self.group = await self.db.get_tryout_group(self.guild.id, self.group[0])
-            if self.group:
-                embed = await self.create_group_embed()
-                await self.message.edit(embed=embed, view=self)
-            await self.update_callback()
+            try:
+                self.group = await self.db.get_tryout_group(self.guild.id, self.group[0])
+                if self.group:
+                    embed = await self.create_group_embed()
+                    try:
+                        await self.message.edit(embed=embed, view=self)
+                    except discord.NotFound:
+                        # Message no longer exists, silently ignore
+                        logger.debug("Could not update view: Message not found")
+                    except discord.HTTPException as e:
+                        logger.debug(f"Could not update view: {e}")
+                await self.update_callback()
+            except Exception as e:
+                logger.debug(f"Error in update_view: {e}")
 
 class DeleteConfirmationView(discord.ui.View):
     def __init__(self, db, guild, group, update_callback, settings_cog):
@@ -781,21 +790,86 @@ class EditGroupRequirementsModal(discord.ui.Modal):
         self.settings_cog = settings_cog
 
     async def on_submit(self, interaction: discord.Interaction):
-        reqs = [r.strip() for r in self.requirements.value.strip().split('\n') if r.strip()]
-        await self.db.update_tryout_group(
-            self.guild.id,
-            self.group[0],
-            self.group[1],
-            self.group[2],
-            reqs
-        )
-        embed = discord.Embed(
-            title="Requirements Updated",
-            description=f"Updated requirements for group: {self.group[2]}",
-            color=discord.Color.green()
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        await self.update_callback()
+        try:
+            reqs = [r.strip() for r in self.requirements.value.strip().split('\n') if r.strip()]
+            await self.db.update_tryout_group(
+                self.guild.id,
+                self.group[0],
+                self.group[1],
+                self.group[2],
+                reqs
+            )
+
+            try:
+                # Try to update the view first
+                updated_group = await self.db.get_tryout_group(self.guild.id, self.group[0])
+                if updated_group:
+                    view = GroupManagementView(self.db, self.guild, updated_group, self.update_callback, self.settings_cog)
+                    embed = await view.create_group_embed()
+                    await interaction.response.edit_message(embed=embed, view=view)
+                    view.message = interaction.message
+
+                    # Send success message as followup
+                    await interaction.followup.send(
+                        embed=discord.Embed(
+                            title="✅ Requirements Updated",
+                            description=f"Successfully updated requirements for **{updated_group[2]}**",
+                            color=discord.Color.green()
+                        ),
+                        ephemeral=True
+                    )
+                    
+                    # Update the settings view
+                    await self.update_callback()
+
+            except discord.NotFound:
+                # If the original message is gone, send a new response
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="✅ Requirements Updated",
+                        description="The requirements were updated, but the view could not be refreshed. Please reopen the settings.",
+                        color=discord.Color.yellow()
+                    ),
+                    ephemeral=True
+                )
+            except discord.InteractionResponded:
+                # If we've already responded, try to send a followup
+                try:
+                    await interaction.followup.send(
+                        embed=discord.Embed(
+                            title="✅ Requirements Updated",
+                            description="The requirements were updated successfully.",
+                            color=discord.Color.green()
+                        ),
+                        ephemeral=True
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not send followup: {e}")
+
+        except Exception as e:
+            logger.debug(f"Error in requirements modal: {e}")
+            # Try to send an error message if we haven't responded yet
+            try:
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="❌ Error",
+                        description="An error occurred while updating the requirements. Please try again.",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
+            except discord.InteractionResponded:
+                try:
+                    await interaction.followup.send(
+                        embed=discord.Embed(
+                            title="❌ Error",
+                            description="An error occurred while updating the requirements. Please try again.",
+                            color=discord.Color.red()
+                        ),
+                        ephemeral=True
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not send error message: {e}")
 
 class EditGroupPingRolesModal(discord.ui.Modal):
     roles = discord.ui.TextInput(
@@ -818,7 +892,10 @@ class EditGroupPingRolesModal(discord.ui.Modal):
         try:
             # Remove existing roles
             for role_id in self.group[4]:
-                await self.db.remove_group_ping_role(self.guild.id, self.group[0], int(role_id))
+                try:
+                    await self.db.remove_group_ping_role(self.guild.id, self.group[0], int(role_id))
+                except Exception as e:
+                    logger.debug(f"Error removing role {role_id}: {e}")
 
             # Add new roles
             valid_roles = []
@@ -828,55 +905,124 @@ class EditGroupPingRolesModal(discord.ui.Modal):
                 if role_id.isdigit():
                     role = self.guild.get_role(int(role_id))
                     if role:
-                        valid_roles.append(role.id)
-                        await self.db.add_group_ping_role(self.guild.id, self.group[0], role.id)
+                        try:
+                            await self.db.add_group_ping_role(self.guild.id, self.group[0], role.id)
+                            valid_roles.append(role.id)
+                        except Exception as e:
+                            logger.debug(f"Error adding role {role_id}: {e}")
+                            invalid_roles.append(role_id)
                     else:
                         invalid_roles.append(role_id)
                 elif role_id:  # Only add to invalid if it's not empty
                     invalid_roles.append(role_id)
 
-            # Get updated group data
-            updated_group = await self.db.get_tryout_group(self.guild.id, self.group[0])
-            if updated_group:
-                # Update the group management view
-                view = GroupManagementView(self.db, self.guild, updated_group, self.update_callback, self.settings_cog)
-                embed = await view.create_group_embed()
-                await interaction.response.edit_message(embed=embed, view=view)
-                view.message = interaction.message
+            try:
+                # Get updated group data
+                updated_group = await self.db.get_tryout_group(self.guild.id, self.group[0])
+                if updated_group:
+                    # Update the group management view
+                    view = GroupManagementView(self.db, self.guild, updated_group, self.update_callback, self.settings_cog)
+                    embed = await view.create_group_embed()
+                    
+                    try:
+                        await interaction.response.edit_message(embed=embed, view=view)
+                        view.message = interaction.message
 
-                # Create and send success message as followup
-                success_embed = discord.Embed(
-                    title="✅ Ping Roles Updated",
-                    description=f"Successfully updated ping roles for **{updated_group[2]}**",
-                    color=discord.Color.green()
-                )
-                if valid_roles:
-                    success_embed.add_field(
-                        name="🔔 Added Roles",
-                        value=", ".join(f"<@&{rid}>" for rid in valid_roles),
-                        inline=False
-                    )
-                if invalid_roles:
-                    success_embed.add_field(
-                        name="❌ Invalid IDs",
-                        value=", ".join(f"`{rid}`" for rid in invalid_roles),
-                        inline=False
-                    )
-                await interaction.followup.send(embed=success_embed, ephemeral=True)
+                        # Create and send success message as followup
+                        success_embed = discord.Embed(
+                            title="✅ Ping Roles Updated",
+                            description=f"Successfully updated ping roles for **{updated_group[2]}**",
+                            color=discord.Color.green()
+                        )
+                        if valid_roles:
+                            success_embed.add_field(
+                                name="🔔 Added Roles",
+                                value=", ".join(f"<@&{rid}>" for rid in valid_roles),
+                                inline=False
+                            )
+                        if invalid_roles:
+                            success_embed.add_field(
+                                name="❌ Invalid IDs",
+                                value=", ".join(f"`{rid}`" for rid in invalid_roles),
+                                inline=False
+                            )
+                        await interaction.followup.send(embed=success_embed, ephemeral=True)
 
-                # Update the settings view
-                await self.update_callback()
+                        # Update the settings view
+                        await self.update_callback()
+                    except discord.NotFound:
+                        # If the original message is gone, send a new response
+                        await interaction.response.send_message(
+                            embed=discord.Embed(
+                                title="✅ Roles Updated",
+                                description="The roles were updated, but the view could not be refreshed. Please reopen the settings.",
+                                color=discord.Color.yellow()
+                            ),
+                            ephemeral=True
+                        )
+                    except discord.InteractionResponded:
+                        # If we've already responded, try to send a followup
+                        try:
+                            await interaction.followup.send(
+                                embed=discord.Embed(
+                                    title="✅ Roles Updated",
+                                    description="The roles were updated successfully.",
+                                    color=discord.Color.green()
+                                ),
+                                ephemeral=True
+                            )
+                        except Exception as e:
+                            logger.debug(f"Could not send followup: {e}")
+
+            except Exception as e:
+                logger.debug(f"Error updating view after role changes: {e}")
+                # Try to send an error message if we haven't responded yet
+                try:
+                    await interaction.response.send_message(
+                        embed=discord.Embed(
+                            title="⚠️ Partial Update",
+                            description="The roles were updated but there was an error refreshing the view. Please reopen the settings.",
+                            color=discord.Color.yellow()
+                        ),
+                        ephemeral=True
+                    )
+                except discord.InteractionResponded:
+                    try:
+                        await interaction.followup.send(
+                            embed=discord.Embed(
+                                title="⚠️ Partial Update",
+                                description="The roles were updated but there was an error refreshing the view. Please reopen the settings.",
+                                color=discord.Color.yellow()
+                            ),
+                            ephemeral=True
+                        )
+                    except Exception as e:
+                        logger.debug(f"Could not send error message: {e}")
 
         except Exception as e:
-            logger.error(f"Error updating ping roles: {e}")
-            await interaction.response.send_message(
-                embed=discord.Embed(
-                    title="❌ Error",
-                    description=f"An error occurred: {str(e)}",
-                    color=discord.Color.red()
-                ),
-                ephemeral=True
-            )
+            logger.debug(f"Error in ping roles modal: {e}")
+            # Try to send an error message if we haven't responded yet
+            try:
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="❌ Error",
+                        description="An error occurred while updating the roles. Please try again.",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
+            except discord.InteractionResponded:
+                try:
+                    await interaction.followup.send(
+                        embed=discord.Embed(
+                            title="❌ Error",
+                            description="An error occurred while updating the roles. Please try again.",
+                            color=discord.Color.red()
+                        ),
+                        ephemeral=True
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not send error message: {e}")
 
 # Update the TryoutSettingsView to use the new group management
 class TryoutSettingsView(discord.ui.View):
@@ -936,8 +1082,20 @@ class TryoutSettingsView(discord.ui.View):
 
     async def async_update_view(self):
         if self.message:
-            e = await self.settings_cog.create_tryout_settings_embed(self.guild)
-            await self.message.edit(embed=e, view=self)
+            try:
+                self.group = await self.db.get_tryout_group(self.guild.id, self.group[0])
+                if self.group:
+                    embed = await self.settings_cog.create_tryout_settings_embed(self.guild)
+                    try:
+                        await self.message.edit(embed=embed, view=self)
+                    except discord.NotFound:
+                        # Message no longer exists, silently ignore
+                        logger.debug("Could not update view: Message not found")
+                    except discord.HTTPException as e:
+                        logger.debug(f"Could not update view: {e}")
+                await self.update_callback()
+            except Exception as e:
+                logger.debug(f"Error in update_view: {e}")
 
     async def on_timeout(self):
         for c in self.children:
