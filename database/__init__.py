@@ -176,7 +176,7 @@ class DatabaseManager:
                 changed = True
             # Add global_bans_enabled if it doesn't exist
             if "global_bans_enabled" not in data["settings"]:
-                data["settings"]["global_bans_enabled"] = True
+                data["settings"]["global_bans_enabled"] = False
                 changed = True
             if changed:
                 await self._update_server_data(server_id, data)
