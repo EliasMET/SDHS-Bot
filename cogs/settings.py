@@ -1559,6 +1559,8 @@ class ModerationSettingsView(discord.ui.View):
         self.db = db
         self.guild = guild
         self.settings_cog = settings_cog
+        self.bot = settings_cog.bot  # Add bot reference
+        self.logger = settings_cog.logger  # Add logger reference
         self.message = None
         self.page = 1
         self.setup_buttons()
@@ -1617,26 +1619,35 @@ class ModerationSettingsView(discord.ui.View):
     async def toggle_global_bans_btn(self, interaction: discord.Interaction):
         """Toggle global bans and sync if enabled"""
         try:
-            settings = await self.db.get_server_settings(interaction.guild.id)
+            settings = await self.db.get_server_settings(self.guild.id)
             current = settings.get('global_bans_enabled', False)
-            await self.db.update_server_setting(interaction.guild.id, 'global_bans_enabled', not current)
+            await self.db.update_server_setting(self.guild.id, 'global_bans_enabled', not current)
             
             # If enabling global bans, sync existing bans
             if not current:  # If it was disabled and now being enabled
-                await interaction.response.defer(thinking=True)
-                moderation_cog = self.bot.get_cog('moderation')
+                await interaction.response.defer(thinking=True, ephemeral=True)
+                moderation_cog = self.bot.get_cog('Moderation')  # Note: 'Moderation' with capital M
                 if moderation_cog:
-                    await moderation_cog.sync_global_bans_for_guild(interaction.guild)
-                await self.async_update_view()
-                await interaction.followup.send("✅ Global bans enabled and synchronized", ephemeral=True)
+                    await moderation_cog.sync_global_bans_for_guild(self.guild)
+                    await self.async_update_view()
+                    await interaction.followup.send("✅ Global bans enabled and synchronized", ephemeral=True)
+                else:
+                    await interaction.followup.send("❌ Could not sync global bans: Moderation module not loaded", ephemeral=True)
             else:
-                await interaction.response.defer()
+                await interaction.response.defer(ephemeral=True)
                 await self.async_update_view()
                 await interaction.followup.send("✅ Global bans disabled", ephemeral=True)
                 
         except Exception as e:
-            self.logger.error(f"Error toggling global bans: {e}")
-            await interaction.response.send_message("❌ Failed to toggle global bans", ephemeral=True)
+            error_msg = f"Error toggling global bans: {str(e)}"
+            self.logger.error(error_msg)
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("❌ " + error_msg, ephemeral=True)
+                else:
+                    await interaction.followup.send("❌ " + error_msg, ephemeral=True)
+            except Exception as e2:
+                self.logger.error(f"Failed to send error message: {e2}")
 
     async def prev_page_btn(self, interaction: discord.Interaction):
         if self.page > 1:
