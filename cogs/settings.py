@@ -412,7 +412,12 @@ class ManageTryoutGroupsModal(discord.ui.Modal):
     group_id = discord.ui.TextInput(label="Group ID", placeholder="numeric Group ID", required=True, max_length=20)
     event_name = discord.ui.TextInput(label="Event Name", required=False, max_length=100)
     description = discord.ui.TextInput(label="Description", style=discord.TextStyle.paragraph, required=False, max_length=2000)
-    requirements = discord.ui.TextInput(label="Requirements", placeholder="One requirement per line", required=False, style=discord.TextStyle.paragraph)
+    requirements = discord.ui.TextInput(
+        label="Requirements & Ping Roles", 
+        placeholder="Requirements: one per line\nPing Roles: start with @role_id, e.g. @123456789", 
+        required=False, 
+        style=discord.TextStyle.paragraph
+    )
 
     def __init__(self, db, guild, update_callback, settings_cog):
         super().__init__(title="Manage Tryout Groups")
@@ -431,8 +436,19 @@ class ManageTryoutGroupsModal(discord.ui.Modal):
 
         try:
             reqs = []
+            ping_roles = []
             if self.requirements.value and self.requirements.value.strip():
-                reqs = [r.strip() for r in self.requirements.value.strip().split('\n') if r.strip()]
+                for line in self.requirements.value.strip().split('\n'):
+                    line = line.strip()
+                    if line.startswith('@'):
+                        # This is a ping role
+                        role_id = line[1:].strip()  # Remove the @ symbol
+                        if role_id.isdigit():
+                            role = self.guild.get_role(int(role_id))
+                            if role:
+                                ping_roles.append(str(role.id))
+                    elif line:  # If line is not empty
+                        reqs.append(line)
 
             if act == 'add':
                 if not (self.event_name.value and self.event_name.value.strip() and 
@@ -440,20 +456,33 @@ class ManageTryoutGroupsModal(discord.ui.Modal):
                     return await interaction.response.send_message(embed=discord.Embed(title="Missing Info", description="Provide event name and description for adding.", color=0xE02B2B), ephemeral=True)
                 if await self.db.get_tryout_group(self.guild.id, gid):
                     return await interaction.response.send_message(embed=discord.Embed(title="Group Exists", description="This ID already exists.", color=0xE02B2B), ephemeral=True)
+                
+                # Create the group with requirements and ping roles
                 await self.db.add_tryout_group(
                     self.guild.id, gid, 
                     self.description.value.strip(), 
                     self.event_name.value.strip(),
                     requirements=reqs
                 )
-                # After adding the group, show the ping roles management view
+                
+                # Add ping roles if any
+                for role_id in ping_roles:
+                    await self.db.add_group_ping_role(self.guild.id, gid, int(role_id))
+
+                # Format ping roles for display
+                ping_roles_display = "\n".join(f"<@&{rid}>" for rid in ping_roles) if ping_roles else "None"
+                
                 embed = discord.Embed(
                     title="Group Added",
-                    description=f"Added group: {self.event_name.value.strip()} (ID: {gid})\nWould you like to configure ping roles for this group?",
+                    description=(
+                        f"Added group: {self.event_name.value.strip()} (ID: {gid})\n"
+                        f"Requirements: {len(reqs)}\n"
+                        f"Ping Roles:\n{ping_roles_display}"
+                    ),
                     color=discord.Color.green()
                 )
-                view = GroupPingRolesView(self.db, self.guild, gid, self.event_name.value.strip(), self.settings_cog)
-                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+
             elif act == 'edit':
                 ex = await self.db.get_tryout_group(self.guild.id, gid)
                 if not ex:
@@ -461,18 +490,36 @@ class ManageTryoutGroupsModal(discord.ui.Modal):
 
                 e_name = self.event_name.value.strip() or ex[2]
                 desc = self.description.value.strip() or ex[1]
-                existing_reqs = ex[3]
-                final_requirements = reqs if self.requirements.value and reqs else existing_reqs
+                final_requirements = reqs if self.requirements.value and reqs else ex[3]
 
+                # Update the group
                 await self.db.update_tryout_group(self.guild.id, gid, desc, e_name, final_requirements)
-                # After editing, show the ping roles management view
+
+                # Update ping roles if provided
+                if self.requirements.value and ping_roles:
+                    # Remove existing ping roles
+                    existing_roles = ex[4]
+                    for role_id in existing_roles:
+                        await self.db.remove_group_ping_role(self.guild.id, gid, int(role_id))
+                    # Add new ping roles
+                    for role_id in ping_roles:
+                        await self.db.add_group_ping_role(self.guild.id, gid, int(role_id))
+
+                # Format ping roles for display
+                final_ping_roles = ping_roles if ping_roles else ex[4]
+                ping_roles_display = "\n".join(f"<@&{rid}>" for rid in final_ping_roles) if final_ping_roles else "None"
+
                 embed = discord.Embed(
                     title="Group Updated",
-                    description=f"Updated {e_name} (ID: {gid})\nWould you like to configure ping roles for this group?",
+                    description=(
+                        f"Updated group: {e_name} (ID: {gid})\n"
+                        f"Requirements: {len(final_requirements)}\n"
+                        f"Ping Roles:\n{ping_roles_display}"
+                    ),
                     color=discord.Color.green()
                 )
-                view = GroupPingRolesView(self.db, self.guild, gid, e_name, self.settings_cog)
-                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+
             else:  # delete
                 if not await self.db.get_tryout_group(self.guild.id, gid):
                     return await interaction.response.send_message(embed=discord.Embed(title="Not Found", description="No such group.", color=0xE02B2B), ephemeral=True)
@@ -490,102 +537,6 @@ class ManageTryoutGroupsModal(discord.ui.Modal):
                 embed=discord.Embed(title="Error", description=f"Try again later: {e}", color=0xE02B2B),
                 ephemeral=True
             )
-
-class GroupPingRolesModal(discord.ui.Modal):
-    action = discord.ui.TextInput(label="Action", placeholder="add/remove", required=True, max_length=6)
-    role_ids = discord.ui.TextInput(label="Role IDs", placeholder="IDs separated by spaces", required=True, style=discord.TextStyle.paragraph)
-
-    def __init__(self, db, guild, group_id, group_name, update_callback, settings_cog):
-        super().__init__(title=f"Manage Ping Roles - {group_name}")
-        self.db = db
-        self.guild = guild
-        self.group_id = group_id
-        self.group_name = group_name
-        self.update_callback = update_callback
-        self.settings_cog = settings_cog
-
-    async def on_submit(self, interaction: discord.Interaction):
-        act = self.action.value.strip().lower()
-        if act not in ['add', 'remove']:
-            return await interaction.response.send_message(
-                embed=discord.Embed(title="Invalid Action", description="Use 'add' or 'remove'.", color=0xE02B2B),
-                ephemeral=True
-            )
-
-        role_ids = [x.strip() for x in self.role_ids.value.strip().split() if x.strip()]
-        if not role_ids:
-            return await interaction.response.send_message(
-                embed=discord.Embed(title="No Role IDs", description="Please provide at least one role ID.", color=0xE02B2B),
-                ephemeral=True
-            )
-
-        valid_roles = []
-        invalid_roles = []
-        for rid in role_ids:
-            if rid.isdigit():
-                role = self.guild.get_role(int(rid))
-                if role:
-                    valid_roles.append(role.id)
-                else:
-                    invalid_roles.append(rid)
-            else:
-                invalid_roles.append(rid)
-
-        if invalid_roles:
-            return await interaction.response.send_message(
-                embed=discord.Embed(title="Invalid Role IDs", description=f"The following IDs are invalid: {', '.join(invalid_roles)}", color=0xE02B2B),
-                ephemeral=True
-            )
-
-        try:
-            for role_id in valid_roles:
-                if act == 'add':
-                    await self.db.add_group_ping_role(self.guild.id, self.group_id, role_id)
-                else:
-                    await self.db.remove_group_ping_role(self.guild.id, self.group_id, role_id)
-
-            roles_text = ", ".join(f"<@&{rid}>" for rid in valid_roles)
-            await interaction.response.send_message(
-                embed=discord.Embed(
-                    title="Ping Roles Updated",
-                    description=f"Successfully {act}ed roles for {self.group_name}: {roles_text}",
-                    color=discord.Color.green()
-                ),
-                ephemeral=True
-            )
-            await self.update_callback()
-        except Exception as e:
-            logger.error(f"Error managing ping roles for group {self.group_id}: {e}")
-            await interaction.response.send_message(
-                embed=discord.Embed(title="Error", description=f"An error occurred: {e}", color=0xE02B2B),
-                ephemeral=True
-            )
-
-class GroupPingRolesView(discord.ui.View):
-    def __init__(self, db, guild, group_id, group_name, settings_cog):
-        super().__init__(timeout=180)
-        self.db = db
-        self.guild = guild
-        self.group_id = group_id
-        self.group_name = group_name
-        self.settings_cog = settings_cog
-
-    @discord.ui.button(label="Manage Ping Roles", style=discord.ButtonStyle.primary, emoji="📢")
-    async def manage_ping_roles_btn(self, interaction: discord.Interaction, _):
-        await interaction.response.send_modal(
-            GroupPingRolesModal(
-                self.db,
-                self.guild,
-                self.group_id,
-                self.group_name,
-                self.settings_cog.create_tryout_settings_embed,
-                self.settings_cog
-            )
-        )
-
-    @discord.ui.button(label="Done", style=discord.ButtonStyle.secondary)
-    async def done_btn(self, interaction: discord.Interaction, _):
-        await interaction.response.edit_message(view=None)
 
 class AutomodMuteDurationModal(discord.ui.Modal):
     duration = discord.ui.TextInput(label="Mute Duration (seconds)", placeholder="3600", required=True, max_length=10)
@@ -1036,19 +987,6 @@ class TryoutSettingsView(discord.ui.View):
                 db=self.db,
                 guild=self.guild,
                 update_callback=self.async_update_view,
-                settings_cog=self.settings_cog
-            ))
-
-    @discord.ui.button(label="Manage Ping Roles", style=discord.ButtonStyle.primary, emoji="📢")
-    async def manage_ping_roles_btn(self, interaction: discord.Interaction, _):
-        if self.message:
-            await interaction.response.send_modal(BaseRoleManagementModal(
-                db=self.db,
-                guild=self.guild,
-                update_callback=self.async_update_view,
-                add_method=self.db.add_ping_role,
-                remove_method=self.db.remove_ping_role,
-                success_title="Ping Roles Updated",
                 settings_cog=self.settings_cog
             ))
 

@@ -146,7 +146,6 @@ class DatabaseManager:
                 "tryout_required_roles": [],
                 "moderation_allowed_roles": [],
                 "locked_channels": [],
-                "ping_roles": [],
                 "automod_exempt_roles": [],
                 "protected_users": [],
                 "tryout_allowed_vcs": [],
@@ -170,6 +169,10 @@ class DatabaseManager:
                 changed = True
             if "automod_exempt_roles" not in data:
                 data["automod_exempt_roles"] = []
+                changed = True
+            # Remove old ping_roles field if it exists
+            if "ping_roles" in data:
+                del data["ping_roles"]
                 changed = True
             if changed:
                 await self._update_server_data(server_id, data)
