@@ -1816,6 +1816,7 @@ class Moderation(commands.Cog, name="moderation"):
                         user_id,
                         f"Global Ban Sync: {ban.get('reason', 'No reason provided')}",
                         int(ban.get('moderator_discord_id', 0))
+                    )
             
             if successful:
                 self.logger.info(f"Synced {len(successful)} global bans to {guild.name}")
