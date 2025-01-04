@@ -1893,8 +1893,7 @@ class Moderation(commands.Cog, name="moderation"):
             self.global_ban = global_ban
             self.duration = duration
             self.selected_reason = None
-            self.BanReasonSelect = BanReasonSelect
-            self.add_item(self.BanReasonSelect(self))
+            self.add_item(Moderation.BanReasonSelect(self))
 
         async def execute_ban(self, interaction: discord.Interaction):
             if not self.selected_reason:
