@@ -1899,8 +1899,6 @@ class Moderation(commands.Cog, name="moderation"):
                 await self.parent_view.cog.handle_local_ban(interaction, self.parent_view.member, self.parent_view.selected_reason)
 
     class BanView(discord.ui.View):
-        BanReasonSelect = None  # This will be set after class definition
-
         def __init__(self, cog, member, global_ban: bool, duration: str = None):
             super().__init__(timeout=60)
             self.cog = cog
@@ -1908,7 +1906,7 @@ class Moderation(commands.Cog, name="moderation"):
             self.global_ban = global_ban
             self.duration = duration
             self.selected_reason = None
-            self.add_item(self.BanReasonSelect(self))
+            self.add_item(Moderation.BanReasonSelect(self))
 
         async def on_timeout(self):
             # Disable the view when it times out
