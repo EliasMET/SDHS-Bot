@@ -731,7 +731,7 @@ class Moderation(commands.Cog, name="moderation"):
                 # See if user is actually banned
                 banned_user = None
                 for entry in ban_entries:
-                    if entry.user.id == user_id_int:
+                    if str(entry.user.id) == str(user_id_int):  # Convert both to string for comparison
                         banned_user = entry.user
                         break
 
