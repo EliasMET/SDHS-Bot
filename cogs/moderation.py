@@ -97,6 +97,16 @@ class Moderation(commands.Cog, name="moderation"):
         self.bot = bot
         self.global_ban_lock = asyncio.Lock()
         self.logger = logging.getLogger('moderation')
+        # List of users authorized to use global ban commands
+        self.global_ban_authorized_users = [
+            828336361928130583,  # User 1
+            1178294054170153010, # User 2
+            1261031293744058532  # User 3
+        ]
+
+    async def check_global_ban_permission(self, user_id: int) -> bool:
+        """Check if a user is authorized to use global ban commands"""
+        return user_id in self.global_ban_authorized_users
 
     async def cog_load(self):
         self.db = self.bot.database
@@ -393,6 +403,16 @@ class Moderation(commands.Cog, name="moderation"):
         await interaction.response.defer(ephemeral=True)
 
         if global_ban:
+            # Check if user is authorized for global bans
+            if not await self.check_global_ban_permission(interaction.user.id):
+                return await interaction.followup.send(
+                    embed=discord.Embed(
+                        description="❌ You are not authorized to use global bans.",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
+            
             expires_at_dt = None
             if duration:
                 secs = self.parse_duration(duration)
@@ -578,8 +598,18 @@ class Moderation(commands.Cog, name="moderation"):
     ):
         await interaction.response.defer(ephemeral=True)
 
-        # Check if global bans are enabled for this server
         if global_unban:
+            # Check if user is authorized for global unbans
+            if not await self.check_global_ban_permission(interaction.user.id):
+                return await interaction.followup.send(
+                    embed=discord.Embed(
+                        description="❌ You are not authorized to use global unbans.",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
+
+            # Check if global bans are enabled for this server
             settings = await self.db.get_server_settings(interaction.guild.id)
             if not settings.get('global_bans_enabled', True):
                 return await interaction.followup.send(
@@ -589,20 +619,19 @@ class Moderation(commands.Cog, name="moderation"):
                     ),
                     ephemeral=True
                 )
+            
+            # Convert ID to int
+            try:
+                user_id_int = int(user_id)
+            except ValueError:
+                return await interaction.followup.send(
+                    embed=discord.Embed(
+                        description="❌ Invalid user ID (must be a number).",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
 
-        # Convert ID to int
-        try:
-            user_id_int = int(user_id)
-        except ValueError:
-            return await interaction.followup.send(
-                embed=discord.Embed(
-                    description="❌ Invalid user ID (must be a number).",
-                    color=discord.Color.red()
-                ),
-                ephemeral=True
-            )
-
-        if global_unban:
             try:
                 # Remove from global ban database
                 removed = await self.db.remove_global_ban(user_id_int)
