@@ -1617,8 +1617,14 @@ class ModerationSettingsView(discord.ui.View):
     async def toggle_global_bans_btn(self, interaction: discord.Interaction):
         if self.message:
             settings = await self.db.get_server_settings(self.guild.id)
-            current = settings.get('global_bans_enabled', True)
+            current = settings.get('global_bans_enabled', False)
             await self.db.update_server_setting(self.guild.id, 'global_bans_enabled', not current)
+            
+            # If enabling global bans, sync existing bans
+            if not current:  # If it was disabled and now being enabled
+                moderation_cog = self.settings_cog.bot.get_cog('Moderation')
+                if moderation_cog:
+                    await moderation_cog.sync_global_bans_for_guild(self.guild)
             
             # Update the embed and view
             embed = await self.settings_cog.create_moderation_settings_embed(self.guild, self.page)
@@ -1631,6 +1637,12 @@ class ModerationSettingsView(discord.ui.View):
                 description=f"Global bans have been **{'disabled' if current else 'enabled'}**.",
                 color=discord.Color.green() if not current else discord.Color.red()
             )
+            if not current:  # If enabling global bans
+                confirm_embed.add_field(
+                    name="Synchronization",
+                    value="Existing global bans are being synchronized to your server.",
+                    inline=False
+                )
             confirm_embed.set_footer(text="This setting affects how the bot handles global ban synchronization")
             await interaction.followup.send(embed=confirm_embed, ephemeral=True)
 

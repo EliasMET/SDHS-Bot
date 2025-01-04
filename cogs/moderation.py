@@ -1769,6 +1769,75 @@ class Moderation(commands.Cog, name="moderation"):
             )
             return False
 
+    async def handle_global_ban(self, guild: discord.Guild, user_id: int, reason: str, moderator_id: int = None):
+        """Handle a global ban across all servers where enabled"""
+        try:
+            # Only apply the ban if the guild has global bans enabled
+            if not await self.db.should_sync_global_bans(guild.id):
+                return
+
+            try:
+                await guild.ban(discord.Object(id=user_id), reason=f"Global Ban: {reason}")
+                self.logger.info(f"Successfully banned {user_id} from {guild.name} (Global Ban)")
+            except discord.Forbidden:
+                self.logger.warning(f"Missing permissions to ban {user_id} from {guild.name}")
+            except discord.NotFound:
+                self.logger.warning(f"User {user_id} not found in {guild.name}")
+            except Exception as e:
+                self.logger.error(f"Error banning {user_id} from {guild.name}: {e}")
+
+        except Exception as e:
+            self.logger.error(f"Error handling global ban in guild {guild.id}: {e}")
+
+    async def handle_global_unban(self, guild: discord.Guild, user_id: int, reason: str = "Global Ban Removed"):
+        """Handle a global unban across all servers where enabled"""
+        try:
+            # Only apply the unban if the guild has global bans enabled
+            if not await self.db.should_sync_global_bans(guild.id):
+                return
+
+            try:
+                await guild.unban(discord.Object(id=user_id), reason=reason)
+                self.logger.info(f"Successfully unbanned {user_id} from {guild.name} (Global Unban)")
+            except discord.Forbidden:
+                self.logger.warning(f"Missing permissions to unban {user_id} from {guild.name}")
+            except discord.NotFound:
+                self.logger.warning(f"User {user_id} not found in {guild.name} ban list")
+            except Exception as e:
+                self.logger.error(f"Error unbanning {user_id} from {guild.name}: {e}")
+
+        except Exception as e:
+            self.logger.error(f"Error handling global unban in guild {guild.id}: {e}")
+
+    async def sync_global_bans_for_guild(self, guild: discord.Guild):
+        """Sync all active global bans to a guild that just enabled global bans"""
+        try:
+            successful, failed = await self.db.sync_global_bans_for_guild(guild.id)
+            
+            for user_id in successful:
+                ban = await self.db.get_global_ban(user_id)
+                if ban:
+                    await self.handle_global_ban(
+                        guild,
+                        user_id,
+                        f"Global Ban Sync: {ban.get('reason', 'No reason provided')}",
+                        int(ban.get('moderator_discord_id', 0))
+                    )
+            
+            if successful:
+                self.logger.info(f"Synced {len(successful)} global bans to {guild.name}")
+            if failed:
+                self.logger.warning(f"Failed to sync {len(failed)} global bans to {guild.name}")
+                
+        except Exception as e:
+            self.logger.error(f"Error syncing global bans for guild {guild.id}: {e}")
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.Guild):
+        """When the bot joins a guild, sync global bans if enabled"""
+        if await self.db.should_sync_global_bans(guild.id):
+            await self.sync_global_bans_for_guild(guild)
+
 #
 # Cog setup
 #

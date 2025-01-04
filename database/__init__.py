@@ -464,7 +464,7 @@ class DatabaseManager:
     async def add_global_ban(
         self,
         discord_user_id: int,
-        roblox_user_id: int,           # <-- ADDED THIS
+        roblox_user_id: int,
         reason: str,
         moderator_discord_id: int,
         expires_at: datetime = None
@@ -507,6 +507,36 @@ class DatabaseManager:
             "active": True
         })
         return doc
+
+    async def get_all_active_global_bans(self) -> list:
+        """Get all active global bans"""
+        return await self.db["global_bans"].find({
+            "active": True
+        }).to_list(None)
+
+    async def should_sync_global_bans(self, guild_id: int) -> bool:
+        """Check if a guild has global ban synchronization enabled"""
+        settings = await self.get_server_settings(guild_id)
+        return settings.get('global_bans_enabled', False)
+
+    async def sync_global_bans_for_guild(self, guild_id: int) -> tuple[list, list]:
+        """
+        Sync all active global bans to a guild that just enabled global bans.
+        Returns tuple of (successful_syncs, failed_syncs) user IDs.
+        """
+        if not await self.should_sync_global_bans(guild_id):
+            return [], []
+
+        active_bans = await self.get_all_active_global_bans()
+        successful = []
+        failed = []
+        
+        for ban in active_bans:
+            user_id = int(ban["discord_user_id"])
+            successful.append(user_id)
+            # Note: The actual banning will be handled by the moderation cog
+            
+        return successful, failed
 
     #
     # ------------- CHANNEL LOCKING -------------
