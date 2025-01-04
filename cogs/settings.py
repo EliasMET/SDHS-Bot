@@ -1626,7 +1626,7 @@ class ModerationSettingsView(discord.ui.View):
             # If enabling global bans, sync existing bans
             if not current:  # If it was disabled and now being enabled
                 await interaction.response.defer(thinking=True, ephemeral=True)
-                moderation_cog = self.bot.get_cog('Moderation')  # Note: 'Moderation' with capital M
+                moderation_cog = self.bot.get_cog('moderation')  # Note: lowercase 'moderation'
                 if moderation_cog:
                     await moderation_cog.sync_global_bans_for_guild(self.guild)
                     await self.async_update_view()
