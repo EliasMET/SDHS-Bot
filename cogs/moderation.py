@@ -426,19 +426,13 @@ class Moderation(commands.Cog, name="moderation"):
 
             # DM embed
             dm_embed = discord.Embed(
-                title="🚫 Ultra Ban Notice",
-                description=(
-                    f"You have been **ultra banned** from all Homeland Security related servers.\n"
-                    f"**Reason:** {reason}\n\n"
-                    "If you believe this is a mistake, please contact an admin."
-                ),
-                color=discord.Color.red(),
-                timestamp=datetime.utcnow()
+                description=f"You have been banned from the Homeland Security main server for {reason}",
+                color=discord.Color.red()
             )
             try:
                 await member.send(embed=dm_embed)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+            except (discord.Forbidden, discord.HTTPException) as e:
+                self.logger.warning(f"Could not DM user {member.id} after auto-ban: {e}")
 
             # Possibly get Roblox info from Bloxlink
             roblox_user_id = None
@@ -1822,7 +1816,6 @@ class Moderation(commands.Cog, name="moderation"):
                         user_id,
                         f"Global Ban Sync: {ban.get('reason', 'No reason provided')}",
                         int(ban.get('moderator_discord_id', 0))
-                    )
             
             if successful:
                 self.logger.info(f"Synced {len(successful)} global bans to {guild.name}")
@@ -1843,4 +1836,3 @@ class Moderation(commands.Cog, name="moderation"):
 #
 async def setup(bot: commands.Bot):
     await bot.add_cog(Moderation(bot))
-    bot.logger.info("Moderation Cog added.")
