@@ -241,7 +241,8 @@ class Settings(commands.Cog):
         mute = await self.db.get_automod_mute_duration(guild_id)
         prot = await self.db.get_protected_users(guild_id)
         exempts = await self.db.get_automod_exempt_roles(guild_id)
-        prot_display = self.format_role_list([f"<@{u}>" for u in prot])
+        # Fix the protected users formatting by using proper user mentions
+        prot_display = "❌ None set" if not prot else ", ".join(f"<@{u}>" for u in prot)
         exempts_display = self.format_role_list(exempts)
         spam_limit = await self.db.get_automod_spam_limit(guild_id)
         spam_window = await self.db.get_automod_spam_window(guild_id)
