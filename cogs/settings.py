@@ -178,11 +178,12 @@ class Settings(commands.Cog):
         req_display = ", ".join(f"<@&{r}>" for r in req) if req else "Not Set"
         groups = await self.db.get_tryout_groups(guild.id)
         grp_display = "\n\n".join(
-            f"**{g[2]}** (ID: {g[0]})\nDescription: {g[1]}\nRequirements:\n" + ("\n".join(f"- {r}" for r in g[3]) if g[3] else "None")
+            f"**{g[2]}** (ID: {g[0]})\nDescription: {g[1]}\nRequirements:\n" + 
+            ("\n".join(f"- {r}" for r in g[3]) if g[3] else "None") +
+            "\nPing Roles:\n" + 
+            ("\n".join(f"- <@&{r}>" for r in g[4]) if g[4] else "None")
             for g in groups
         ) if groups else "No groups."
-        ping = await self.db.get_ping_roles(guild.id)
-        ping_display = ", ".join(f"<@&{r}>" for r in ping) if ping else "No roles set."
         allowed_vcs = await self.db.get_tryout_allowed_vcs(guild.id)
         vc_display = ", ".join(f"<#{vc}>" for vc in allowed_vcs) if allowed_vcs else "None"
 
@@ -190,7 +191,6 @@ class Settings(commands.Cog):
         embed.add_field(name="Tryout Channel", value=ch, inline=False)
         embed.add_field(name="Required Roles", value=req_display, inline=False)
         embed.add_field(name="Tryout Groups", value=grp_display, inline=False)
-        embed.add_field(name="Ping Roles", value=ping_display, inline=False)
         embed.add_field(name="Allowed Voice Channels", value=vc_display, inline=False)
         return embed
 
