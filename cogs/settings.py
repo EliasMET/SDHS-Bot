@@ -2,11 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from enum import Enum
-import logging
 import traceback
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 class SettingsCategory(Enum):
     AUTOMOD = "automod"
@@ -19,6 +15,7 @@ class Settings(commands.Cog):
         self.bot = bot
         self.db = None
         self.owner_id = None
+        self.logger = bot.logger
         self.category_handlers = {
             SettingsCategory.AUTOMOD.value: self.handle_automod_settings,
             SettingsCategory.TRYOUT.value: self.handle_tryout_settings,
@@ -51,12 +48,12 @@ class Settings(commands.Cog):
                 try:
                     await interaction.followup.send(embed=embed, ephemeral=True)
                 except discord.HTTPException as e:
-                    logger.error(f"Failed to send error followup: {e}")
+                    self.logger.error(f"Failed to send error followup: {e}")
         except Exception as e:
-            logger.error(f"Failed to send error response: {e}")
+            self.logger.error(f"Failed to send error response: {e}")
 
     async def handle_exception(self, interaction: discord.Interaction, e: Exception, context: str = "handling settings"):
-        logger.error("An error occurred while %s:", context)
+        self.logger.error("An error occurred while %s:", context)
         traceback.print_exc()
         embed = self.create_error_embed(
             "Error",
@@ -83,10 +80,10 @@ class Settings(commands.Cog):
             try:
                 await interaction.response.defer(ephemeral=True)
             except discord.NotFound:
-                logger.error(f"Interaction not found when deferring response for category {category.value}")
+                self.logger.error(f"Interaction not found when deferring response for category {category.value}")
                 return
             except discord.HTTPException as e:
-                logger.error(f"HTTP error when deferring response for category {category.value}: {e}")
+                self.logger.error(f"HTTP error when deferring response for category {category.value}: {e}")
                 return
 
             handler = self.category_handlers.get(category.value)
@@ -99,12 +96,12 @@ class Settings(commands.Cog):
             try:
                 await handler(interaction)
             except Exception as e:
-                logger.error(f"Error in category handler for {category.value}:")
+                self.logger.error(f"Error in category handler for {category.value}:")
                 traceback.print_exc()
                 await self.handle_exception(interaction, e, context=f"processing {category.value} settings")
 
         except Exception as e:
-            logger.error("Unexpected error in settings command:")
+            self.logger.error("Unexpected error in settings command:")
             traceback.print_exc()
             try:
                 if not interaction.response.is_done():
@@ -118,7 +115,7 @@ class Settings(commands.Cog):
                         ephemeral=True
                     )
             except Exception as e2:
-                logger.error(f"Failed to send error message: {e2}")
+                self.logger.error(f"Failed to send error message: {e2}")
 
     async def handle_automod_settings(self, interaction: discord.Interaction):
         try:
@@ -131,7 +128,7 @@ class Settings(commands.Cog):
             view = AutomodSettingsView(self.db, interaction.guild, self, page=1)
             view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         except Exception as e:
-            logger.error("Error in handle_automod_settings:")
+            self.logger.error("Error in handle_automod_settings:")
             traceback.print_exc()
             await self.send_error_response(interaction, "Error", f"Failed to load automod settings: {e}")
 
@@ -141,7 +138,7 @@ class Settings(commands.Cog):
             view = TryoutSettingsView(self.db, interaction.guild, self)
             view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         except Exception as e:
-            logger.error("Error in handle_tryout_settings:")
+            self.logger.error("Error in handle_tryout_settings:")
             traceback.print_exc()
             await self.send_error_response(
                 interaction,
@@ -155,7 +152,7 @@ class Settings(commands.Cog):
             view = ModerationSettingsView(self.db, interaction.guild, self)
             view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         except Exception as e:
-            logger.error("Error in handle_moderation_settings:")
+            self.logger.error("Error in handle_moderation_settings:")
             traceback.print_exc()
             await self.send_error_response(
                 interaction,
@@ -169,7 +166,7 @@ class Settings(commands.Cog):
             view = AutopromotionSettingsView(self.db, interaction.guild, self)
             view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         except Exception as e:
-            logger.error("Error in handle_autopromotion_settings:")
+            self.logger.error("Error in handle_autopromotion_settings:")
             traceback.print_exc()
             await self.send_error_response(
                 interaction,
@@ -345,7 +342,7 @@ class Settings(commands.Cog):
     @settings_command.error
     async def settings_error(self, interaction: discord.Interaction, error):
         """Enhanced error handling for settings command"""
-        logger.error("Error in settings command:")
+        self.logger.error("Error in settings command:")
         traceback.print_exc()
         
         try:
@@ -356,11 +353,11 @@ class Settings(commands.Cog):
                     "You need Administrator permission or be the bot owner."
                 )
             elif isinstance(error, discord.NotFound):
-                logger.error(f"Interaction not found: {error}")
+                self.logger.error(f"Interaction not found: {error}")
                 # Don't try to respond as the interaction is invalid
                 return
             elif isinstance(error, discord.HTTPException):
-                logger.error(f"HTTP error in settings command: {error}")
+                self.logger.error(f"HTTP error in settings command: {error}")
                 if not interaction.response.is_done():
                     await interaction.response.send_message(
                         embed=self.create_error_embed("Error", "Failed to process your request. Please try again."),
@@ -384,7 +381,7 @@ class Settings(commands.Cog):
                         ephemeral=True
                     )
         except Exception as e:
-            logger.error(f"Failed to handle settings error: {e}")
+            self.logger.error(f"Failed to handle settings error: {e}")
             traceback.print_exc()
 
 
@@ -429,7 +426,7 @@ class BaseChannelModal(discord.ui.Modal):
             )
             await self.update_callback()
         except Exception as e:
-            logger.error("Error in BaseChannelModal on_submit:")
+            self.logger.error("Error in BaseChannelModal on_submit:")
             traceback.print_exc()
             await interaction.response.send_message(
                 embed=discord.Embed(title="Error", description=f"Failed to set the channel: {e}", color=0xE02B2B),
@@ -507,7 +504,7 @@ class BaseRoleManagementModal(discord.ui.Modal):
             )
             await self.update_callback()
         except Exception as e:
-            logger.error("Error in BaseRoleManagementModal on_submit:")
+            self.logger.error("Error in BaseRoleManagementModal on_submit:")
             traceback.print_exc()
             await interaction.response.send_message(
                 embed=discord.Embed(title="Error", description=f"Failed to manage roles: {e}", color=0xE02B2B),
@@ -585,7 +582,7 @@ class BaseVCManagementModal(discord.ui.Modal):
             )
             await self.update_callback()
         except Exception as e:
-            logger.error("Error in BaseVCManagementModal on_submit:")
+            self.logger.error("Error in BaseVCManagementModal on_submit:")
             traceback.print_exc()
             await interaction.response.send_message(
                 embed=discord.Embed(title="Error", description=f"Failed to manage voice channels: {e}", color=0xE02B2B),
@@ -648,7 +645,7 @@ class TryoutGroupSelectView(discord.ui.View):
     async def group_select_callback(self, interaction: discord.Interaction):
         try:
             selected_value = self.group_select.values[0]
-            logger.debug(f"Group selection callback triggered with value: {selected_value}")
+            self.logger.debug(f"Group selection callback triggered with value: {selected_value}")
             
             try:
                 if selected_value == "new":
@@ -664,7 +661,7 @@ class TryoutGroupSelectView(discord.ui.View):
                         await interaction.response.edit_message(embed=embed, view=view)
                         view.message = interaction.message
                     else:
-                        logger.warning(f"Selected group {selected_value} not found in database")
+                        self.logger.warning(f"Selected group {selected_value} not found in database")
                         await interaction.response.send_message(
                             embed=discord.Embed(
                                 title="❌ Error",
@@ -674,10 +671,10 @@ class TryoutGroupSelectView(discord.ui.View):
                             ephemeral=True
                         )
             except discord.NotFound:
-                logger.error(f"Interaction not found when handling group selection: {selected_value}")
+                self.logger.error(f"Interaction not found when handling group selection: {selected_value}")
                 return
             except discord.HTTPException as e:
-                logger.error(f"HTTP error when handling group selection: {e}")
+                self.logger.error(f"HTTP error when handling group selection: {e}")
                 await interaction.followup.send(
                     embed=discord.Embed(
                         title="❌ Error",
@@ -687,7 +684,7 @@ class TryoutGroupSelectView(discord.ui.View):
                     ephemeral=True
                 )
         except Exception as e:
-            logger.error(f"Error in group selection callback:")
+            self.logger.error(f"Error in group selection callback:")
             traceback.print_exc()
             try:
                 await interaction.followup.send(
@@ -699,7 +696,7 @@ class TryoutGroupSelectView(discord.ui.View):
                     ephemeral=True
                 )
             except Exception as e2:
-                logger.error(f"Failed to send error message: {e2}")
+                self.logger.error(f"Failed to send error message: {e2}")
 
     async def update_view(self):
         if self.message:
@@ -767,7 +764,7 @@ class NewTryoutGroupModal(discord.ui.Modal):
                 view.message = interaction.message
 
         except Exception as e:
-            logger.error(f"Error creating group: {e}")
+            self.logger.error(f"Error creating group: {e}")
             await interaction.response.send_message(
                 embed=discord.Embed(title="❌ Error", description=str(e), color=discord.Color.red()),
                 ephemeral=True
@@ -886,12 +883,12 @@ class GroupManagementView(discord.ui.View):
                         await self.message.edit(embed=embed, view=self)
                     except discord.NotFound:
                         # Message no longer exists, silently ignore
-                        logger.debug("Could not update view: Message not found")
+                        self.logger.debug("Could not update view: Message not found")
                     except discord.HTTPException as e:
-                        logger.debug(f"Could not update view: {e}")
+                        self.logger.debug(f"Could not update view: {e}")
                 await self.update_callback()
             except Exception as e:
-                logger.debug(f"Error in update_view: {e}")
+                self.logger.debug(f"Error in update_view: {e}")
 
 class DeleteConfirmationView(discord.ui.View):
     def __init__(self, db, guild, group, update_callback, settings_cog):
@@ -908,9 +905,9 @@ class DeleteConfirmationView(discord.ui.View):
             # Try to delete the group
             try:
                 await self.db.delete_tryout_group(self.guild.id, self.group[0])
-                logger.debug(f"Successfully deleted group {self.group[0]} from database")
+                self.logger.debug(f"Successfully deleted group {self.group[0]} from database")
             except Exception as e:
-                logger.error(f"Error deleting group {self.group[0]} from database: {e}")
+                self.logger.error(f"Error deleting group {self.group[0]} from database: {e}")
                 await interaction.response.send_message(
                     embed=discord.Embed(
                         title="❌ Error",
@@ -939,11 +936,11 @@ class DeleteConfirmationView(discord.ui.View):
                 try:
                     await self.update_callback()
                 except Exception as e:
-                    logger.debug(f"Error in update callback after group deletion: {e}")
+                    self.logger.debug(f"Error in update callback after group deletion: {e}")
                     # Don't raise the error since the deletion was successful
             
             except discord.NotFound:
-                logger.debug("Could not edit original message after group deletion - message not found")
+                self.logger.debug("Could not edit original message after group deletion - message not found")
                 # Try to send a new message instead
                 try:
                     await interaction.response.send_message(
@@ -965,10 +962,10 @@ class DeleteConfirmationView(discord.ui.View):
                             ephemeral=True
                         )
                     except Exception as e:
-                        logger.debug(f"Could not send followup message after group deletion: {e}")
+                        self.logger.debug(f"Could not send followup message after group deletion: {e}")
             
             except Exception as e:
-                logger.error(f"Error updating view after group deletion: {e}")
+                self.logger.error(f"Error updating view after group deletion: {e}")
                 # Try to send an error message
                 try:
                     await interaction.response.send_message(
@@ -990,10 +987,10 @@ class DeleteConfirmationView(discord.ui.View):
                             ephemeral=True
                         )
                     except Exception as e:
-                        logger.debug(f"Could not send error message after group deletion: {e}")
+                        self.logger.debug(f"Could not send error message after group deletion: {e}")
 
         except Exception as e:
-            logger.error(f"Unexpected error in delete confirmation: {e}")
+            self.logger.error(f"Unexpected error in delete confirmation: {e}")
             # Try to send an error message
             try:
                 await interaction.response.send_message(
@@ -1015,7 +1012,7 @@ class DeleteConfirmationView(discord.ui.View):
                         ephemeral=True
                     )
                 except Exception as e:
-                    logger.debug(f"Could not send error message: {e}")
+                    self.logger.debug(f"Could not send error message: {e}")
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def cancel_btn(self, interaction: discord.Interaction, _):
@@ -1028,7 +1025,7 @@ class DeleteConfirmationView(discord.ui.View):
                 await interaction.response.edit_message(embed=embed, view=view)
                 view.message = interaction.message
             except discord.NotFound:
-                logger.debug("Could not edit original message when canceling deletion - message not found")
+                self.logger.debug("Could not edit original message when canceling deletion - message not found")
                 await interaction.response.send_message(
                     embed=discord.Embed(
                         title="⚠️ Navigation Error",
@@ -1038,7 +1035,7 @@ class DeleteConfirmationView(discord.ui.View):
                     ephemeral=True
                 )
             except Exception as e:
-                logger.error(f"Error returning to group management view: {e}")
+                self.logger.error(f"Error returning to group management view: {e}")
                 await interaction.response.send_message(
                     embed=discord.Embed(
                         title="⚠️ Navigation Error",
@@ -1049,7 +1046,7 @@ class DeleteConfirmationView(discord.ui.View):
                 )
         
         except Exception as e:
-            logger.error(f"Unexpected error in cancel button: {e}")
+            self.logger.error(f"Unexpected error in cancel button: {e}")
             try:
                 await interaction.response.send_message(
                     embed=discord.Embed(
@@ -1070,7 +1067,7 @@ class DeleteConfirmationView(discord.ui.View):
                         ephemeral=True
                     )
                 except Exception as e:
-                    logger.debug(f"Could not send error message: {e}")
+                    self.logger.debug(f"Could not send error message: {e}")
 
     async def on_timeout(self):
         try:
@@ -1081,11 +1078,11 @@ class DeleteConfirmationView(discord.ui.View):
             try:
                 await self.message.edit(view=self)
             except discord.NotFound:
-                logger.debug("Could not disable buttons on timeout - message not found")
+                self.logger.debug("Could not disable buttons on timeout - message not found")
             except Exception as e:
-                logger.debug(f"Error disabling buttons on timeout: {e}")
+                self.logger.debug(f"Error disabling buttons on timeout: {e}")
         except Exception as e:
-            logger.debug(f"Unexpected error in timeout handler: {e}")
+            self.logger.debug(f"Unexpected error in timeout handler: {e}")
 
 class EditGroupNameModal(discord.ui.Modal):
     name = discord.ui.TextInput(
@@ -1230,10 +1227,10 @@ class EditGroupRequirementsModal(discord.ui.Modal):
                         ephemeral=True
                     )
                 except Exception as e:
-                    logger.debug(f"Could not send followup: {e}")
+                    self.logger.debug(f"Could not send followup: {e}")
 
         except Exception as e:
-            logger.debug(f"Error in requirements modal: {e}")
+            self.logger.debug(f"Error in requirements modal: {e}")
             # Try to send an error message if we haven't responded yet
             try:
                 await interaction.response.send_message(
@@ -1255,7 +1252,7 @@ class EditGroupRequirementsModal(discord.ui.Modal):
                         ephemeral=True
                     )
                 except Exception as e:
-                    logger.debug(f"Could not send error message: {e}")
+                    self.logger.debug(f"Could not send error message: {e}")
 
 class EditGroupPingRolesModal(discord.ui.Modal):
     roles = discord.ui.TextInput(
@@ -1283,7 +1280,7 @@ class EditGroupPingRolesModal(discord.ui.Modal):
                 try:
                     await self.db.remove_group_ping_role(self.guild.id, self.group[0], int(role_id))
                 except Exception as e:
-                    logger.debug(f"Error removing role {role_id}: {e}")
+                    self.logger.debug(f"Error removing role {role_id}: {e}")
 
             # Add new roles
             valid_roles = []
@@ -1297,7 +1294,7 @@ class EditGroupPingRolesModal(discord.ui.Modal):
                             await self.db.add_group_ping_role(self.guild.id, self.group[0], role.id)
                             valid_roles.append(role.id)
                         except Exception as e:
-                            logger.debug(f"Error adding role {role_id}: {e}")
+                            self.logger.debug(f"Error adding role {role_id}: {e}")
                             invalid_roles.append(role_id)
                     else:
                         invalid_roles.append(role_id)
@@ -1366,10 +1363,10 @@ class EditGroupPingRolesModal(discord.ui.Modal):
                                 ephemeral=True
                             )
                         except Exception as e:
-                            logger.debug(f"Could not send followup: {e}")
+                            self.logger.debug(f"Could not send followup: {e}")
 
             except Exception as e:
-                logger.debug(f"Error updating view after role changes: {e}")
+                self.logger.debug(f"Error updating view after role changes: {e}")
                 # Try to send an error message if we haven't responded yet
                 try:
                     await interaction.response.send_message(
@@ -1391,10 +1388,10 @@ class EditGroupPingRolesModal(discord.ui.Modal):
                             ephemeral=True
                         )
                     except Exception as e:
-                        logger.debug(f"Could not send error message: {e}")
+                        self.logger.debug(f"Could not send error message: {e}")
 
         except Exception as e:
-            logger.debug(f"Error in ping roles modal: {e}")
+            self.logger.debug(f"Error in ping roles modal: {e}")
             # Try to send an error message if we haven't responded yet
             try:
                 await interaction.response.send_message(
@@ -1416,7 +1413,7 @@ class EditGroupPingRolesModal(discord.ui.Modal):
                         ephemeral=True
                     )
                 except Exception as e:
-                    logger.debug(f"Could not send error message: {e}")
+                    self.logger.debug(f"Could not send error message: {e}")
 
 # Update the TryoutSettingsView to use the new group management
 class TryoutSettingsView(discord.ui.View):
@@ -1484,12 +1481,12 @@ class TryoutSettingsView(discord.ui.View):
                         await self.message.edit(embed=embed, view=self)
                     except discord.NotFound:
                         # Message no longer exists, silently ignore
-                        logger.debug("Could not update view: Message not found")
+                        self.logger.debug("Could not update view: Message not found")
                     except discord.HTTPException as e:
-                        logger.debug(f"Could not update view: {e}")
+                        self.logger.debug(f"Could not update view: {e}")
                 await self.update_callback()
             except Exception as e:
-                logger.debug(f"Error in update_view: {e}")
+                self.logger.debug(f"Error in update_view: {e}")
 
     async def on_timeout(self):
         for c in self.children:
@@ -1646,11 +1643,11 @@ class ModerationSettingsView(discord.ui.View):
                 try:
                     await self.message.edit(embed=embed, view=self)
                 except discord.NotFound:
-                    logger.debug("Could not update view: Message not found")
+                    self.logger.debug("Could not update view: Message not found")
                 except discord.HTTPException as e:
-                    logger.debug(f"Could not update view: {e}")
+                    self.logger.debug(f"Could not update view: {e}")
             except Exception as e:
-                logger.debug(f"Error in update_view: {e}")
+                self.logger.debug(f"Error in update_view: {e}")
 
     async def on_timeout(self):
         for child in self.children:
@@ -1825,11 +1822,11 @@ class AutomodSettingsView(discord.ui.View):
                 try:
                     await self.message.edit(embed=embed, view=self)
                 except discord.NotFound:
-                    logger.debug("Could not update view: Message not found")
+                    self.logger.debug("Could not update view: Message not found")
                 except discord.HTTPException as e:
-                    logger.debug(f"Could not update view: {e}")
+                    self.logger.debug(f"Could not update view: {e}")
             except Exception as e:
-                logger.debug(f"Error in update_view: {e}")
+                self.logger.debug(f"Error in update_view: {e}")
 
     async def on_timeout(self):
         for child in self.children:
