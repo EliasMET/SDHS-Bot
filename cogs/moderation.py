@@ -411,7 +411,7 @@ class Moderation(commands.Cog, name="moderation"):
         member: Union[discord.Member, discord.User],
         reason: str = None,
         global_ban: bool = False,
-        duration: str = None
+        duration: Optional[str] = None
     ):
         await interaction.response.defer(ephemeral=True)
 
@@ -485,7 +485,6 @@ class Moderation(commands.Cog, name="moderation"):
             except Exception as e:
                 self.logger.warning(f"Bloxlink error: {e}")
 
-        # DB write for global ban
         async with self.global_ban_lock:
             try:
                 await self.db.add_global_ban(
@@ -521,7 +520,6 @@ class Moderation(commands.Cog, name="moderation"):
             # Hack-ban across all guilds
             ban_details = []
             for g in self.bot.guilds:
-                # Only ban in guilds where global bans are enabled
                 if not await self.db.should_sync_global_bans(g.id):
                     continue
                     
@@ -571,7 +569,7 @@ class Moderation(commands.Cog, name="moderation"):
         """Handle a local ban with the given reason"""
         if isinstance(member, discord.Member):
             try:
-                await member.ban(reason=reason, delete_message_days=0)
+                await member.ban(reason=f"[Local Ban] {reason}", delete_message_days=0)
             except discord.Forbidden:
                 e_p = discord.Embed(description="❌ Missing perms to ban user.", color=discord.Color.red())
                 return await interaction.followup.send(embed=e_p, ephemeral=True)
@@ -1895,7 +1893,8 @@ class Moderation(commands.Cog, name="moderation"):
             self.global_ban = global_ban
             self.duration = duration
             self.selected_reason = None
-            self.add_item(self.cog.BanReasonSelect(self))
+            self.BanReasonSelect = BanReasonSelect
+            self.add_item(self.BanReasonSelect(self))
 
         async def execute_ban(self, interaction: discord.Interaction):
             if not self.selected_reason:
