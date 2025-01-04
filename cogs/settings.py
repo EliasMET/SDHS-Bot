@@ -496,7 +496,7 @@ class ManageTryoutGroupsModal(discord.ui.Modal):
                 await self.db.update_tryout_group(self.guild.id, gid, desc, e_name, final_requirements)
 
                 # Update ping roles if provided
-                if self.requirements.value and ping_roles:
+                if self.requirements.value:  # Only update ping roles if requirements field was filled
                     # Remove existing ping roles
                     existing_roles = ex[4]
                     for role_id in existing_roles:
@@ -506,7 +506,7 @@ class ManageTryoutGroupsModal(discord.ui.Modal):
                         await self.db.add_group_ping_role(self.guild.id, gid, int(role_id))
 
                 # Format ping roles for display
-                final_ping_roles = ping_roles if ping_roles else ex[4]
+                final_ping_roles = ping_roles if self.requirements.value else ex[4]
                 ping_roles_display = "\n".join(f"<@&{rid}>" for rid in final_ping_roles) if final_ping_roles else "None"
 
                 embed = discord.Embed(
@@ -529,7 +529,18 @@ class ManageTryoutGroupsModal(discord.ui.Modal):
                     ephemeral=True
                 )
 
-            await self.update_callback()
+            # Update the original settings embed
+            if self.update_callback:
+                await self.update_callback()
+                
+            # Also update the original interaction message if it exists
+            if hasattr(interaction, 'message') and interaction.message:
+                try:
+                    new_embed = await self.settings_cog.create_tryout_settings_embed(self.guild)
+                    await interaction.message.edit(embed=new_embed)
+                except:
+                    pass  # Silently fail if we can't update the original message
+
         except Exception as e:
             logger.error("Error in ManageTryoutGroupsModal on_submit:")
             traceback.print_exc()
