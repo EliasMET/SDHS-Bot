@@ -224,17 +224,7 @@ class Settings(commands.Cog):
         else:
             global_bans_enabled = settings.get('global_bans_enabled', True)
             status = "✅ Enabled" if global_bans_enabled else "❌ Disabled"
-            embed.add_field(name="🌐 Global Bans Status", value=status, inline=False)
-            embed.add_field(
-                name="ℹ️ Info",
-                value=(
-                    "When enabled, this server participates in the global ban system:\n"
-                    "• Users can be banned across all participating servers\n"
-                    "• Global bans from other servers will be enforced here\n"
-                    "• Moderators can issue and remove global bans"
-                ),
-                inline=False
-            )
+            embed.add_field(name="🌐 Global Ban System", value=status, inline=False)
 
         embed.set_footer(text="Use the buttons below to manage settings")
         return embed
@@ -1630,13 +1620,10 @@ class ModerationSettingsView(discord.ui.View):
     async def toggle_global_bans_btn(self, interaction: discord.Interaction):
         if self.message:
             settings = await self.db.get_server_settings(self.guild.id)
-            current = settings.get('global_bans_enabled', True)  # Default to True
+            current = settings.get('global_bans_enabled', True)
             await self.db.update_server_setting(self.guild.id, 'global_bans_enabled', not current)
             await self.async_update_view()
-            await interaction.response.send_message(
-                f"Global bans {'disabled' if current else 'enabled'} for this server.",
-                ephemeral=True
-            )
+            await interaction.response.defer()
 
     async def prev_page_btn(self, interaction: discord.Interaction):
         if self.page > 1:
