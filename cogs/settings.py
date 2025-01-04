@@ -835,38 +835,37 @@ class EditGroupPingRolesModal(discord.ui.Modal):
                 elif role_id:  # Only add to invalid if it's not empty
                     invalid_roles.append(role_id)
 
-            # Create response embed
-            embed = discord.Embed(
-                title="✅ Ping Roles Updated",
-                description=f"Successfully updated ping roles for **{self.group[2]}**",
-                color=discord.Color.green()
-            )
-            if valid_roles:
-                embed.add_field(
-                    name="🔔 Added Roles",
-                    value=", ".join(f"<@&{rid}>" for rid in valid_roles),
-                    inline=False
-                )
-            if invalid_roles:
-                embed.add_field(
-                    name="❌ Invalid IDs",
-                    value=", ".join(f"`{rid}`" for rid in invalid_roles),
-                    inline=False
-                )
+            # Get updated group data
+            updated_group = await self.db.get_tryout_group(self.guild.id, self.group[0])
+            if updated_group:
+                # Update the group management view
+                view = GroupManagementView(self.db, self.guild, updated_group, self.update_callback, self.settings_cog)
+                embed = await view.create_group_embed()
+                await interaction.response.edit_message(embed=embed, view=view)
+                view.message = interaction.message
 
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            
-            # Update both the group management view and the settings view
-            await self.update_callback()
-            
-            # Also update the current group management view
-            if interaction.message:
-                group = await self.db.get_tryout_group(self.guild.id, self.group[0])
-                if group:
-                    view = GroupManagementView(self.db, self.guild, group, self.update_callback, self.settings_cog)
-                    embed = await view.create_group_embed()
-                    await interaction.message.edit(embed=embed, view=view)
-                    view.message = interaction.message
+                # Create and send success message as followup
+                success_embed = discord.Embed(
+                    title="✅ Ping Roles Updated",
+                    description=f"Successfully updated ping roles for **{updated_group[2]}**",
+                    color=discord.Color.green()
+                )
+                if valid_roles:
+                    success_embed.add_field(
+                        name="🔔 Added Roles",
+                        value=", ".join(f"<@&{rid}>" for rid in valid_roles),
+                        inline=False
+                    )
+                if invalid_roles:
+                    success_embed.add_field(
+                        name="❌ Invalid IDs",
+                        value=", ".join(f"`{rid}`" for rid in invalid_roles),
+                        inline=False
+                    )
+                await interaction.followup.send(embed=success_embed, ephemeral=True)
+
+                # Update the settings view
+                await self.update_callback()
 
         except Exception as e:
             logger.error(f"Error updating ping roles: {e}")
