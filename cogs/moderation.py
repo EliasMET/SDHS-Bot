@@ -620,6 +620,18 @@ class Moderation(commands.Cog, name="moderation"):
     ):
         await interaction.response.defer(ephemeral=True)
 
+        # Convert ID to int first
+        try:
+            user_id_int = int(user_id)
+        except ValueError:
+            return await interaction.followup.send(
+                embed=discord.Embed(
+                    description="❌ Invalid user ID (must be a number).",
+                    color=discord.Color.red()
+                ),
+                ephemeral=True
+            )
+
         if global_unban:
             # Check if user is authorized for global unbans
             if not await self.check_global_ban_permission(interaction.user.id):
@@ -637,18 +649,6 @@ class Moderation(commands.Cog, name="moderation"):
                 return await interaction.followup.send(
                     embed=discord.Embed(
                         description="❌ Global bans are disabled for this server.",
-                        color=discord.Color.red()
-                    ),
-                    ephemeral=True
-                )
-            
-            # Convert ID to int
-            try:
-                user_id_int = int(user_id)
-            except ValueError:
-                return await interaction.followup.send(
-                    embed=discord.Embed(
-                        description="❌ Invalid user ID (must be a number).",
                         color=discord.Color.red()
                     ),
                     ephemeral=True
