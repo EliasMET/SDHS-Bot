@@ -177,43 +177,103 @@ class Settings(commands.Cog):
                 f"Failed to load autopromotion settings: {e}"
             )
 
+    def truncate_text(self, text: str, max_length: int = 1000) -> str:
+        """Helper method to truncate text with ellipsis if too long"""
+        return f"{text[:max_length-3]}..." if len(text) > max_length else text
+
+    def chunk_list(self, items: list, chunk_size: int = 15) -> list:
+        """Helper method to split a list into chunks"""
+        return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+    def format_role_list(self, roles: list, max_roles: int = 10) -> str:
+        """Helper method to format a list of role mentions"""
+        if not roles:
+            return "❌ None set"
+        
+        roles_display = [f"<@&{r}>" for r in roles[:max_roles]]
+        if len(roles) > max_roles:
+            roles_display.append(f"and {len(roles) - max_roles} more...")
+        return ", ".join(roles_display)
+
+    def format_channel_list(self, channels: list, max_channels: int = 10) -> str:
+        """Helper method to format a list of channel mentions"""
+        if not channels:
+            return "❌ None set"
+        
+        channels_display = [f"<#{c}>" for c in channels[:max_channels]]
+        if len(channels) > max_channels:
+            channels_display.append(f"and {len(channels) - max_channels} more...")
+        return ", ".join(channels_display)
+
+    async def create_moderation_settings_embed(self, guild: discord.Guild) -> discord.Embed:
+        settings = await self.db.get_server_settings(guild.id)
+        ch_id = settings.get('mod_log_channel_id')
+        ch = f"<#{ch_id}>" if ch_id else "❌ Not Set"
+        roles = await self.db.get_moderation_allowed_roles(guild.id)
+        rd = self.format_role_list(roles)
+
+        embed = discord.Embed(
+            title="⚙️ Moderation Settings",
+            color=discord.Color.blue(),
+            description="Configure moderation settings below."
+        )
+        embed.add_field(name="📝 Log Channel", value=ch, inline=False)
+        embed.add_field(name="👥 Allowed Roles", value=rd, inline=False)
+        embed.set_footer(text="Use the buttons below to manage settings")
+        return embed
+
+    async def create_autopromotion_settings_embed(self, guild: discord.Guild) -> discord.Embed:
+        ch_id = await self.db.get_autopromotion_channel_id(guild.id)
+        ch = f"<#{ch_id}>" if ch_id else "❌ Not Set"
+        embed = discord.Embed(
+            title="⚙️ Autopromotion Settings",
+            color=discord.Color.blue(),
+            description="Configure autopromotion settings below."
+        )
+        embed.add_field(name="📝 Watch Channel", value=ch, inline=False)
+        embed.set_footer(text="Use the buttons below to manage settings")
+        return embed
+
     async def create_automod_settings_embed(self, s: dict, guild_id: int, page: int) -> discord.Embed:
         au_status = "✅ Enabled" if s.get('automod_enabled') else "❌ Disabled"
         lg_status = "✅ Enabled" if s.get('automod_logging_enabled') else "❌ Disabled"
-        lg_ch = f"<#{s.get('automod_log_channel_id')}>" if s.get('automod_log_channel_id') else "Not Set"
+        lg_ch = f"<#{s.get('automod_log_channel_id')}>" if s.get('automod_log_channel_id') else "❌ Not Set"
         mute = await self.db.get_automod_mute_duration(guild_id)
         prot = await self.db.get_protected_users(guild_id)
         exempts = await self.db.get_automod_exempt_roles(guild_id)
-        prot_display = ", ".join(f"<@{u}>" for u in prot) if prot else "None"
-        exempts_display = ", ".join(f"<@&{r}>" for r in exempts) if exempts else "None"
+        prot_display = self.format_role_list([f"<@{u}>" for u in prot])
+        exempts_display = self.format_role_list(exempts)
         spam_limit = await self.db.get_automod_spam_limit(guild_id)
         spam_window = await self.db.get_automod_spam_window(guild_id)
 
-        embed = discord.Embed(title="⚙️ Automod Settings", color=discord.Color.blue(), description=f"Page {page}/3")
-        embed.set_footer(text="Use the buttons below to configure.")
+        embed = discord.Embed(
+            title="⚙️ Automod Settings",
+            color=discord.Color.blue(),
+            description=f"Page {page}/3 • Configure automod settings below."
+        )
         
         if page == 1:
-            embed.add_field(name="Automod Status", value=au_status, inline=True)
-            embed.add_field(name="Logging Status", value=lg_status, inline=True)
-            embed.add_field(name="Log Channel", value=lg_ch, inline=False)
+            embed.add_field(name="🤖 Automod Status", value=au_status, inline=True)
+            embed.add_field(name="📝 Logging Status", value=lg_status, inline=True)
+            embed.add_field(name="📌 Log Channel", value=lg_ch, inline=False)
         elif page == 2:
-            embed.add_field(name="Mute Duration (seconds)", value=str(mute), inline=True)
-            embed.add_field(name="Protected Users", value=prot_display, inline=False)
-            embed.add_field(name="Exempt Roles", value=exempts_display, inline=False)
+            embed.add_field(name="⏲️ Mute Duration", value=f"{mute} seconds", inline=True)
+            embed.add_field(name="🛡️ Protected Users", value=prot_display, inline=False)
+            embed.add_field(name="👥 Exempt Roles", value=exempts_display, inline=False)
         else:  # page 3
-            embed.add_field(name="Spam Message Limit", value=str(spam_limit), inline=True)
-            embed.add_field(name="Spam Time Window (seconds)", value=str(spam_window), inline=True)
+            embed.add_field(name="🔢 Spam Message Limit", value=str(spam_limit), inline=True)
+            embed.add_field(name="⌛ Spam Time Window", value=f"{spam_window} seconds", inline=True)
 
+        embed.set_footer(text="Use the buttons below to configure • Some lists may be truncated")
         return embed
 
     async def create_tryout_settings_embed(self, guild: discord.Guild) -> discord.Embed:
         ch_id = await self.db.get_tryout_channel_id(guild.id)
         ch = f"<#{ch_id}>" if ch_id else "❌ Not Set"
         req = await self.db.get_tryout_required_roles(guild.id)
-        req_display = ", ".join(f"<@&{r}>" for r in req) if req else "❌ Not Set"
+        req_display = self.format_role_list(req)
         groups = await self.db.get_tryout_groups(guild.id)
         
-        # Create main embed
         embed = discord.Embed(
             title="⚙️ Tryout Settings",
             color=discord.Color.blue(),
@@ -222,8 +282,8 @@ class Settings(commands.Cog):
         embed.add_field(name="📌 Tryout Channel", value=ch, inline=False)
         embed.add_field(name="👥 Required Roles", value=req_display, inline=False)
         
-        # Handle groups with potential length issues
         if groups:
+            # Split groups into chunks if needed
             group_chunks = []
             current_chunk = []
             current_length = 0
@@ -232,70 +292,46 @@ class Settings(commands.Cog):
                 # Format requirements with proper handling
                 req_text = "None"
                 if g[3]:
-                    req_lines = [f"• {r}" for r in g[3][:5]]
-                    if len(g[3]) > 5:
-                        req_lines.append("• ...")
+                    req_lines = [f"• {r}" for r in g[3][:3]]
+                    if len(g[3]) > 3:
+                        req_lines.append(f"• ... and {len(g[3]) - 3} more")
                     req_text = "\n".join(req_lines)
 
                 # Format ping roles with proper handling
-                roles_text = "None"
-                if g[4]:
-                    roles = [f"<@&{r}>" for r in g[4][:5]]
-                    if len(g[4]) > 5:
-                        roles.append("...")
-                    roles_text = ", ".join(roles)
+                roles_text = self.format_role_list(g[4], max_roles=5)
 
-                # Create the full group text
+                # Create the group text with truncated description
                 group_text = (
                     f"**🎯 {g[2]}** (ID: `{g[0]}`)\n"
-                    f"📝 Description: {g[1][:200]}{'...' if len(g[1]) > 200 else ''}\n"
+                    f"📝 Description: {self.truncate_text(g[1], 100)}\n"
                     f"📋 Requirements:\n{req_text}\n"
                     f"🔔 Ping Roles: {roles_text}"
                 )
                 
                 # Check if adding this group would exceed the limit
-                if current_length + len(group_text) + 2 > 1000:  # Leave some margin
+                if current_length + len(group_text) + 2 > 900:  # Leave more margin
                     group_chunks.append("\n\n".join(current_chunk))
                     current_chunk = [group_text]
                     current_length = len(group_text)
                 else:
                     current_chunk.append(group_text)
-                    current_length += len(group_text) + 2  # +2 for the newlines
+                    current_length += len(group_text) + 2
             
             if current_chunk:
                 group_chunks.append("\n\n".join(current_chunk))
             
             # Add group fields with proper chunking
             for i, chunk in enumerate(group_chunks):
-                field_name = "🎯 Tryout Groups" if i == 0 else "🎯 Tryout Groups (Continued)"
+                field_name = "🎯 Tryout Groups" if i == 0 else f"🎯 Tryout Groups (Part {i+1})"
                 embed.add_field(name=field_name, value=chunk, inline=False)
         else:
             embed.add_field(name="🎯 Tryout Groups", value="❌ No groups configured.", inline=False)
         
         allowed_vcs = await self.db.get_tryout_allowed_vcs(guild.id)
-        vc_display = ", ".join(f"<#{vc}>" for vc in allowed_vcs) if allowed_vcs else "❌ Not Set"
+        vc_display = self.format_channel_list(allowed_vcs)
         embed.add_field(name="🔊 Allowed Voice Channels", value=vc_display, inline=False)
         
         embed.set_footer(text="Use the buttons below to manage settings • Some content may be truncated")
-        return embed
-
-    async def create_moderation_settings_embed(self, guild: discord.Guild) -> discord.Embed:
-        settings = await self.db.get_server_settings(guild.id)
-        ch_id = settings.get('mod_log_channel_id')
-        ch = f"<#{ch_id}>" if ch_id else "Not Set"
-        roles = await self.db.get_moderation_allowed_roles(guild.id)
-        rd = ", ".join(f"<@&{r}>" for r in roles) if roles else "No roles set."
-
-        embed = discord.Embed(title="⚙️ Moderation Settings", color=discord.Color.blue())
-        embed.add_field(name="Moderation Log Channel", value=ch, inline=False)
-        embed.add_field(name="Allowed Roles", value=rd, inline=False)
-        return embed
-
-    async def create_autopromotion_settings_embed(self, guild: discord.Guild) -> discord.Embed:
-        ch_id = await self.db.get_autopromotion_channel_id(guild.id)
-        ch = f"<#{ch_id}>" if ch_id else "Not Set"
-        embed = discord.Embed(title="⚙️ Autopromotion Settings", color=discord.Color.blue())
-        embed.add_field(name="Watch Channel", value=ch, inline=False)
         return embed
 
     @settings_command.error
@@ -1259,6 +1295,12 @@ class EditGroupPingRolesModal(discord.ui.Modal):
                         invalid_roles.append(role_id)
                 elif role_id:  # Only add to invalid if it's not empty
                     invalid_roles.append(role_id)
+
+            if invalid_roles:
+                return await interaction.response.send_message(
+                    f"Invalid role IDs: {', '.join(invalid_roles)}",
+                    ephemeral=True
+                )
 
             try:
                 # Get updated group data
