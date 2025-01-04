@@ -1886,6 +1886,8 @@ class Moderation(commands.Cog, name="moderation"):
             await self.parent_view.execute_ban(interaction)
 
     class BanView(discord.ui.View):
+        BanReasonSelect = None  # This will be set after class definition
+
         def __init__(self, cog, member, global_ban: bool, duration: str = None):
             super().__init__(timeout=60)
             self.cog = cog
@@ -1893,7 +1895,7 @@ class Moderation(commands.Cog, name="moderation"):
             self.global_ban = global_ban
             self.duration = duration
             self.selected_reason = None
-            self.add_item(Moderation.BanReasonSelect(self))
+            self.add_item(self.BanReasonSelect(self))
 
         async def execute_ban(self, interaction: discord.Interaction):
             if not self.selected_reason:
@@ -1909,6 +1911,9 @@ class Moderation(commands.Cog, name="moderation"):
                 await self.cog.handle_global_ban(interaction, self.member, self.selected_reason, self.duration)
             else:
                 await self.cog.handle_local_ban(interaction, self.member, self.selected_reason)
+
+    # Set the BanReasonSelect class after both classes are defined
+    BanView.BanReasonSelect = BanReasonSelect
 
 #
 # Cog setup
