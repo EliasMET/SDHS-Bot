@@ -1,10 +1,10 @@
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
 import sys
 import logging
@@ -13,6 +13,7 @@ import jwt
 from jwt.exceptions import InvalidTokenError
 import httpx
 import discord
+from enum import Enum
 
 # Add parent directory to path to import database
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -30,7 +31,54 @@ JWT_SECRET = os.getenv("JWT_SECRET", "your-secret-key")  # Change in production
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION = 24  # hours
 
-app = FastAPI(title="SDHS Bot API", version="1.0.0")
+class TryoutGroup(BaseModel):
+    """A tryout group for a specific event or role"""
+    event_name: str = Field(..., description="Name of the event or role")
+    description: str = Field(..., description="Description of the tryout")
+    requirements: List[str] = Field(default=[], description="List of requirements for the tryout")
+    ping_roles: List[str] = Field(default=[], description="List of role IDs to ping for this tryout")
+
+class TryoutGroupUpdate(BaseModel):
+    """Update model for tryout groups"""
+    event_name: Optional[str] = Field(None, description="Name of the event or role")
+    description: Optional[str] = Field(None, description="Description of the tryout")
+    requirements: Optional[List[str]] = Field(None, description="List of requirements for the tryout")
+    ping_roles: Optional[List[str]] = Field(None, description="List of role IDs to ping for this tryout")
+
+class TryoutSession(BaseModel):
+    """A tryout session instance"""
+    group_id: str = Field(..., description="ID of the tryout group")
+    channel_id: str = Field(..., description="ID of the channel where the tryout is taking place")
+    voice_channel_id: Optional[str] = Field(None, description="ID of the voice channel if applicable")
+    host_id: str = Field(..., description="ID of the user hosting the tryout")
+    lock_timestamp: str = Field(..., description="When the tryout will be locked")
+    requirements: List[str] = Field(default=[], description="List of requirements for this session")
+    description: str = Field(..., description="Description of the session")
+
+app = FastAPI(
+    title="SDHS Bot API",
+    description="""
+    The API for the SDHS Discord Bot. This API provides endpoints for managing tryouts,
+    moderation cases, and server settings.
+    
+    ## Authentication
+    All endpoints require JWT authentication. To get a token, make a POST request to `/token`
+    with your Discord OAuth2 token in the Authorization header.
+    
+    ## Rate Limiting
+    The API implements rate limiting to prevent abuse. Please cache responses when possible.
+    
+    ## Endpoints
+    The API is organized around the following main resources:
+    - Servers: Manage server settings and configurations
+    - Tryouts: Manage tryout groups and sessions
+    - Cases: Handle moderation cases
+    - Stats: Get server statistics
+    """,
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
 # Add CORS middleware
 app.add_middleware(
@@ -140,7 +188,12 @@ async def get_server_settings(
         logger.error(f"Error getting server settings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/server/{server_id}/tryout-groups")
+@app.get("/server/{server_id}/tryout-groups",
+    response_model=List[dict],
+    tags=["tryouts"],
+    summary="Get all tryout groups for a server",
+    description="Returns a list of all tryout groups configured for the specified server."
+)
 async def get_tryout_groups(
     server_id: int,
     token_data: TokenData = Depends(verify_token),
@@ -162,7 +215,111 @@ async def get_tryout_groups(
         logger.error(f"Error getting tryout groups: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/server/{server_id}/active-tryouts")
+@app.post("/server/{server_id}/tryout-groups",
+    response_model=dict,
+    tags=["tryouts"],
+    summary="Create a new tryout group",
+    description="Creates a new tryout group for the specified server."
+)
+async def create_tryout_group(
+    server_id: int,
+    group: TryoutGroup,
+    token_data: TokenData = Depends(verify_token),
+    db: DatabaseManager = Depends(get_database)
+):
+    try:
+        # Generate a unique group ID (you might want to implement this in the database manager)
+        import uuid
+        group_id = str(uuid.uuid4())[:8].upper()
+        
+        await db.add_tryout_group(
+            server_id,
+            group_id,
+            group.description,
+            group.event_name,
+            group.requirements
+        )
+        
+        # Add ping roles if specified
+        for role_id in group.ping_roles:
+            await db.add_group_ping_role(server_id, group_id, int(role_id))
+        
+        return {
+            "group_id": group_id,
+            "message": "Tryout group created successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error creating tryout group: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/server/{server_id}/tryout-groups/{group_id}",
+    response_model=dict,
+    tags=["tryouts"],
+    summary="Update a tryout group",
+    description="Updates an existing tryout group's settings."
+)
+async def update_tryout_group(
+    server_id: int,
+    group_id: str,
+    group: TryoutGroupUpdate,
+    token_data: TokenData = Depends(verify_token),
+    db: DatabaseManager = Depends(get_database)
+):
+    try:
+        existing_group = await db.get_tryout_group(server_id, group_id)
+        if not existing_group:
+            raise HTTPException(status_code=404, detail="Tryout group not found")
+        
+        await db.update_tryout_group(
+            server_id,
+            group_id,
+            group.description or existing_group[1],
+            group.event_name or existing_group[2],
+            group.requirements or existing_group[3]
+        )
+        
+        if group.ping_roles is not None:
+            # Remove existing ping roles
+            current_roles = existing_group[4]
+            for role_id in current_roles:
+                await db.remove_group_ping_role(server_id, group_id, int(role_id))
+            
+            # Add new ping roles
+            for role_id in group.ping_roles:
+                await db.add_group_ping_role(server_id, group_id, int(role_id))
+        
+        return {"message": "Tryout group updated successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating tryout group: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/server/{server_id}/tryout-groups/{group_id}",
+    response_model=dict,
+    tags=["tryouts"],
+    summary="Delete a tryout group",
+    description="Deletes a tryout group and all associated data."
+)
+async def delete_tryout_group(
+    server_id: int,
+    group_id: str,
+    token_data: TokenData = Depends(verify_token),
+    db: DatabaseManager = Depends(get_database)
+):
+    try:
+        await db.delete_tryout_group(server_id, group_id)
+        return {"message": "Tryout group deleted successfully"}
+    except Exception as e:
+        logger.error(f"Error deleting tryout group: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/server/{server_id}/active-tryouts",
+    response_model=List[dict],
+    tags=["tryouts"],
+    summary="Get active tryout sessions",
+    description="Returns a list of all active tryout sessions for the specified server."
+)
 async def get_active_tryouts(
     server_id: int,
     token_data: TokenData = Depends(verify_token),
@@ -173,6 +330,64 @@ async def get_active_tryouts(
         return sessions
     except Exception as e:
         logger.error(f"Error getting active tryouts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/server/{server_id}/tryout-sessions",
+    response_model=dict,
+    tags=["tryouts"],
+    summary="Create a new tryout session",
+    description="Creates a new tryout session for a specific tryout group."
+)
+async def create_tryout_session(
+    server_id: int,
+    session: TryoutSession,
+    token_data: TokenData = Depends(verify_token),
+    db: DatabaseManager = Depends(get_database)
+):
+    try:
+        # Get the tryout group to verify it exists and get its name
+        group = await db.get_tryout_group(server_id, session.group_id)
+        if not group:
+            raise HTTPException(status_code=404, detail="Tryout group not found")
+        
+        # Create Discord invite if voice channel is specified
+        voice_invite = None
+        if session.voice_channel_id:
+            try:
+                channel = bot_client.get_channel(int(session.voice_channel_id))
+                if channel and isinstance(channel, discord.VoiceChannel):
+                    invite = await channel.create_invite(
+                        max_age=3600,  # 1 hour
+                        max_uses=0,    # unlimited uses
+                        unique=True
+                    )
+                    voice_invite = str(invite)
+            except Exception as e:
+                logger.error(f"Error creating voice channel invite: {e}")
+        
+        session_id = await db.create_tryout_session(
+            guild_id=server_id,
+            host_id=int(session.host_id),
+            group_id=session.group_id,
+            group_name=group[2],  # event_name from the group
+            channel_id=int(session.channel_id),
+            voice_channel_id=int(session.voice_channel_id) if session.voice_channel_id else None,
+            lock_timestamp=session.lock_timestamp,
+            requirements=session.requirements,
+            description=session.description,
+            message_id=0,  # This will be updated when the bot posts the message
+            voice_invite=voice_invite
+        )
+        
+        return {
+            "session_id": session_id,
+            "voice_invite": voice_invite,
+            "message": "Tryout session created successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating tryout session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/server/{server_id}/warnings/{user_id}")
@@ -245,8 +460,8 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
 # Create intents
 intents = discord.Intents.default()
-intents.guilds = True  # Enable guild (server) intents
-intents.members = True  # Enable member intents if needed
+intents.guilds = True
+intents.members = True
 
 # Initialize bot with intents
 bot_client = discord.Client(intents=intents)
