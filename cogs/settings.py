@@ -285,6 +285,8 @@ class BaseChannelModal(discord.ui.Modal):
     channel_id = discord.ui.TextInput(label="Channel ID", placeholder="Enter the channel ID", required=True, max_length=20)
 
     def __init__(self, db, guild, setting_name, update_callback, settings_cog, title="Set Channel"):
+        # Ensure title doesn't exceed 45 chars
+        title = title[:45] if len(title) > 45 else title
         super().__init__(title=title)
         self.db = db
         self.guild = guild
@@ -328,11 +330,24 @@ class BaseChannelModal(discord.ui.Modal):
             )
 
 class BaseRoleManagementModal(discord.ui.Modal):
-    action = discord.ui.TextInput(label="Action", placeholder="add/remove", required=True, max_length=6)
-    role_ids = discord.ui.TextInput(label="Role IDs", placeholder="IDs separated by spaces", required=True, style=discord.TextStyle.paragraph, max_length=2000)
+    action = discord.ui.TextInput(
+        label="Action",
+        placeholder="add/remove",
+        required=True,
+        max_length=6
+    )
+    role_ids = discord.ui.TextInput(
+        label="Role IDs",
+        placeholder="IDs separated by spaces",
+        required=True,
+        style=discord.TextStyle.paragraph,
+        max_length=2000
+    )
 
     def __init__(self, db, guild, update_callback, add_method, remove_method, success_title, settings_cog):
-        super().__init__(title=success_title)
+        # Ensure title doesn't exceed 45 chars
+        title = success_title[:45] if len(success_title) > 45 else success_title
+        super().__init__(title=title)
         self.db = db
         self.guild = guild
         self.update_callback = update_callback
@@ -393,11 +408,24 @@ class BaseRoleManagementModal(discord.ui.Modal):
             )
 
 class BaseVCManagementModal(discord.ui.Modal):
-    action = discord.ui.TextInput(label="Action", placeholder="add/remove", required=True, max_length=6)
-    vc_ids = discord.ui.TextInput(label="Voice Channel IDs", placeholder="IDs separated by spaces", required=True, style=discord.TextStyle.paragraph, max_length=2000)
+    action = discord.ui.TextInput(
+        label="Action",
+        placeholder="add/remove",
+        required=True,
+        max_length=6
+    )
+    vc_ids = discord.ui.TextInput(
+        label="Voice Channel IDs",
+        placeholder="IDs separated by spaces",
+        required=True,
+        style=discord.TextStyle.paragraph,
+        max_length=2000
+    )
 
     def __init__(self, db, guild, update_callback, add_method, remove_method, success_title, settings_cog):
-        super().__init__(title=success_title)
+        # Ensure title doesn't exceed 45 chars
+        title = success_title[:45] if len(success_title) > 45 else success_title
+        super().__init__(title=title)
         self.db = db
         self.guild = guild
         self.update_callback = update_callback
@@ -706,7 +734,7 @@ class GroupManagementView(discord.ui.View):
             try:
                 self.group = await self.db.get_tryout_group(self.guild.id, self.group[0])
                 if self.group:
-                    embed = await self.create_group_embed()
+                    embed = await self.settings_cog.create_tryout_settings_embed(self.guild)
                     try:
                         await self.message.edit(embed=embed, view=self)
                     except discord.NotFound:
@@ -921,7 +949,9 @@ class EditGroupNameModal(discord.ui.Modal):
     )
 
     def __init__(self, db, guild, group, update_callback, settings_cog):
-        super().__init__(title=f"Edit Group Name - {group[2]}")
+        # Truncate group name to ensure title doesn't exceed 45 chars
+        group_name = group[2][:20] + "..." if len(group[2]) > 20 else group[2]
+        super().__init__(title=f"Edit Group Name - {group_name}")
         self.db = db
         self.guild = guild
         self.group = group
@@ -954,7 +984,9 @@ class EditGroupDescriptionModal(discord.ui.Modal):
     )
 
     def __init__(self, db, guild, group, update_callback, settings_cog):
-        super().__init__(title=f"Edit Description - {group[2]}")
+        # Truncate group name to ensure title doesn't exceed 45 chars
+        group_name = group[2][:20] + "..." if len(group[2]) > 20 else group[2]
+        super().__init__(title=f"Edit Description - {group_name}")
         self.db = db
         self.guild = guild
         self.group = group
@@ -987,7 +1019,9 @@ class EditGroupRequirementsModal(discord.ui.Modal):
     )
 
     def __init__(self, db, guild, group, update_callback, settings_cog):
-        super().__init__(title=f"Edit Requirements - {group[2]}")
+        # Truncate group name to ensure title doesn't exceed 45 chars
+        group_name = group[2][:20] + "..." if len(group[2]) > 20 else group[2]
+        super().__init__(title=f"Edit Requirements - {group_name}")
         self.db = db
         self.guild = guild
         self.group = group
@@ -1079,14 +1113,16 @@ class EditGroupRequirementsModal(discord.ui.Modal):
 class EditGroupPingRolesModal(discord.ui.Modal):
     roles = discord.ui.TextInput(
         label="Ping Roles",
-        placeholder="Enter role IDs separated by spaces (e.g., 123456789 987654321)",
+        placeholder="Enter role IDs separated by spaces",
         required=True,
         style=discord.TextStyle.paragraph,
         max_length=2000
     )
 
     def __init__(self, db, guild, group, update_callback, settings_cog):
-        super().__init__(title=f"🔔 Edit Ping Roles - {group[2]}")
+        # Truncate group name to ensure title doesn't exceed 45 chars
+        group_name = group[2][:20] + "..." if len(group[2]) > 20 else group[2]
+        super().__init__(title=f"Edit Ping Roles - {group_name}")
         self.db = db
         self.guild = guild
         self.group = group
@@ -1347,6 +1383,8 @@ class AutopromotionSettingsView(discord.ui.View):
 class AutopromotionChannelModal(discord.ui.Modal):
     channel_id = discord.ui.TextInput(label="Channel ID", placeholder="Enter the channel ID", required=True, max_length=20)
     def __init__(self, db, guild, update_callback, settings_cog, title="Set Autopromotion Watch Channel"):
+        # Ensure title doesn't exceed 45 chars
+        title = title[:45] if len(title) > 45 else title
         super().__init__(title=title)
         self.db = db
         self.guild = guild
