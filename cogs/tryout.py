@@ -66,8 +66,9 @@ class PaginatedDropdownView(discord.ui.View):
         reqs = group_info["requirements"] if group_info.get("requirements") else []
         req_text = "\n".join(reqs) if reqs else "None"
 
-        # Fetch ping roles
-        ping_roles = await self.bot.database.get_ping_roles(interaction.guild.id)
+        # Get ping roles for this specific group
+        group_data = await self.bot.database.get_tryout_group(interaction.guild.id, selected_group_id)
+        ping_roles = group_data[4] if group_data else []  # Index 4 contains ping_roles
         pings = " ".join(f"<@&{rid}>" for rid in ping_roles) if ping_roles else ""
 
         # Generate a voice channel invite link if the user is in a voice channel
@@ -375,8 +376,9 @@ class Tryout(commands.Cog, name="tryout"):
                     reqs = group_info["requirements"] if group_info.get("requirements") else []
                     req_text = "\n".join(reqs) if reqs else "None"
 
-                    # Get ping roles
-                    ping_roles = await self.db.get_ping_roles(interaction.guild.id)
+                    # Get ping roles for this specific group
+                    group_data = await self.db.get_tryout_group(interaction.guild.id, selected_group_id)
+                    ping_roles = group_data[4] if group_data else []  # Index 4 contains ping_roles
                     pings = " ".join(f"<@&{rid}>" for rid in ping_roles) if ping_roles else ""
 
                     # Generate voice channel invite

@@ -301,13 +301,13 @@ class DatabaseManager:
     async def get_tryout_groups(self, server_id: int) -> list:
         data = await self._get_server_data(server_id)
         groups = data.get("tryout_groups", [])
-        return [(g["group_id"], g["description"], g["event_name"], g.get("requirements", [])) for g in groups]
+        return [(g["group_id"], g["description"], g["event_name"], g.get("requirements", []), g.get("ping_roles", [])) for g in groups]
 
     async def get_tryout_group(self, server_id: int, group_id: str):
         data = await self._get_server_data(server_id)
         for g in data["tryout_groups"]:
             if g["group_id"] == group_id:
-                return (g["group_id"], g["description"], g["event_name"], g.get("requirements", []))
+                return (g["group_id"], g["description"], g["event_name"], g.get("requirements", []), g.get("ping_roles", []))
         return None
 
     async def add_tryout_group(self, server_id: int, group_id: str, description: str, event_name: str, requirements: list):
@@ -319,7 +319,8 @@ class DatabaseManager:
             "group_id": group_id,
             "description": description,
             "event_name": event_name,
-            "requirements": requirements
+            "requirements": requirements,
+            "ping_roles": []
         })
         await self._update_server_data(server_id, {"tryout_groups": data["tryout_groups"]})
 
@@ -331,10 +332,35 @@ class DatabaseManager:
                 g["description"] = description
                 g["event_name"] = event_name
                 g["requirements"] = requirements
+                # Preserve existing ping_roles
+                if "ping_roles" not in g:
+                    g["ping_roles"] = []
                 updated = True
                 break
         if updated:
             await self._update_server_data(server_id, {"tryout_groups": data["tryout_groups"]})
+
+    async def add_group_ping_role(self, server_id: int, group_id: str, role_id: int):
+        """Add a ping role to a specific tryout group"""
+        data = await self._get_server_data(server_id)
+        for g in data["tryout_groups"]:
+            if g["group_id"] == group_id:
+                if "ping_roles" not in g:
+                    g["ping_roles"] = []
+                if str(role_id) not in g["ping_roles"]:
+                    g["ping_roles"].append(str(role_id))
+                    await self._update_server_data(server_id, {"tryout_groups": data["tryout_groups"]})
+                break
+
+    async def remove_group_ping_role(self, server_id: int, group_id: str, role_id: int):
+        """Remove a ping role from a specific tryout group"""
+        data = await self._get_server_data(server_id)
+        for g in data["tryout_groups"]:
+            if g["group_id"] == group_id:
+                if "ping_roles" in g and str(role_id) in g["ping_roles"]:
+                    g["ping_roles"].remove(str(role_id))
+                    await self._update_server_data(server_id, {"tryout_groups": data["tryout_groups"]})
+                break
 
     async def delete_tryout_group(self, server_id: int, group_id: str):
         data = await self._get_server_data(server_id)
