@@ -562,79 +562,181 @@ class Moderation(commands.Cog, name="moderation"):
     #
     # --------------- /unban Command ---------------
     #
-    @app_commands.command(name="unban", description="Unban a user from the current server by ID.")
-    @app_commands.describe(user_id="ID of the user to unban.", reason="Reason for unbanning.")
+    @app_commands.command(name="unban", description="Unban a user from the current server or globally.")
+    @app_commands.describe(
+        user_id="ID of the user to unban.",
+        reason="Reason for unbanning.",
+        global_unban="If True, unban user across all servers."
+    )
     @app_commands.check(is_moderator)
     async def unban(
         self,
         interaction: discord.Interaction,
         user_id: str,
-        reason: str = "No reason provided."
+        reason: str = "No reason provided.",
+        global_unban: bool = False
     ):
-        """
-        Unban a user from this server by user ID. 
-        We'll attempt to find them in the ban list and unban if found.
-        """
         await interaction.response.defer(ephemeral=True)
 
-        # convert ID to int
+        # Check if global bans are enabled for this server
+        if global_unban:
+            settings = await self.db.get_server_settings(interaction.guild.id)
+            if not settings.get('global_bans_enabled', True):
+                return await interaction.followup.send(
+                    embed=discord.Embed(
+                        description="❌ Global bans are disabled for this server.",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
+
+        # Convert ID to int
         try:
             user_id_int = int(user_id)
         except ValueError:
-            e_err = discord.Embed(
-                description="❌ Invalid user ID (must be a number).",
-                color=discord.Color.red()
-            )
-            return await interaction.followup.send(embed=e_err, ephemeral=True)
-
-        guild = interaction.guild
-        try:
-            # guild.bans() is an async iterator in newer libraries, so we do:
-            ban_entries = [entry async for entry in guild.bans()]
-
-            # see if user is actually banned
-            banned_user = None
-            for entry in ban_entries:
-                if entry.user.id == user_id_int:
-                    banned_user = entry.user
-                    break
-
-            if not banned_user:
-                e_none = discord.Embed(
-                    description=f"❌ User `{user_id_int}` is not banned here or no matching ban found.",
+            return await interaction.followup.send(
+                embed=discord.Embed(
+                    description="❌ Invalid user ID (must be a number).",
                     color=discord.Color.red()
-                )
-                return await interaction.followup.send(embed=e_none, ephemeral=True)
-
-            await guild.unban(banned_user, reason=reason)
-            case_id = await self.db.add_case(
-                guild.id, banned_user.id, interaction.user.id, "unban", reason
-            )
-            e_done = discord.Embed(
-                description=(
-                    f"🔓 **Unbanned** <@{banned_user.id}> (ID: {banned_user.id})\n"
-                    f"**Reason:** {reason}\n"
-                    f"**Case:** `{case_id}`"
                 ),
-                color=discord.Color.green()
-            )
-            await interaction.followup.send(embed=e_done, ephemeral=True)
-
-            # log
-            await self.log_moderation_action(
-                guild,
-                "Unban",
-                interaction.user,
-                banned_user,
-                reason
+                ephemeral=True
             )
 
-        except discord.Forbidden:
-            e = discord.Embed(description="❌ Missing permission to unban.", color=discord.Color.red())
-            await interaction.followup.send(embed=e, ephemeral=True)
-        except discord.HTTPException as ex:
-            e = discord.Embed(description=f"❌ Failed to unban user: {ex}", color=discord.Color.red())
-            await interaction.followup.send(embed=e, ephemeral=True)
+        if global_unban:
+            try:
+                # Remove from global ban database
+                removed = await self.db.remove_global_ban(user_id_int)
+                if not removed:
+                    return await interaction.followup.send(
+                        embed=discord.Embed(
+                            description="❌ No active global ban found for this user.",
+                            color=discord.Color.red()
+                        ),
+                        ephemeral=True
+                    )
+
+                # Unban from all guilds
+                unban_details = []
+                for g in self.bot.guilds:
+                    if g.me.guild_permissions.ban_members:
+                        try:
+                            await g.unban(discord.Object(id=user_id_int), reason=f"[Global Unban] {reason}")
+                            unban_details.append((g.name, True))
+                        except Exception:
+                            unban_details.append((g.name, False))
+
+                # Format results
+                success_guilds = [f"✅ **{n}**" for (n, ok) in unban_details if ok]
+                failed_guilds = [f"❌ **{n}**" for (n, ok) in unban_details if not ok]
+
+                succ_text = "\n".join(success_guilds) if success_guilds else "None"
+                fail_text = "\n".join(failed_guilds) if failed_guilds else "None"
+
+                # Add case
+                case_id = await self.db.add_case(
+                    interaction.guild.id,
+                    user_id_int,
+                    interaction.user.id,
+                    "global_unban",
+                    reason
+                )
+
+                # Create response embed
+                desc = (
+                    f"🌐 **Global Unban** on <@{user_id_int}>\n"
+                    f"**Reason:** {reason}\n\n"
+                    f"**Successful Unbans:**\n{succ_text}\n\n"
+                    f"**Failed Unbans:**\n{fail_text}\n\n"
+                    f"**Case ID:** `{case_id}`"
+                )
+                embed = discord.Embed(description=desc, color=discord.Color.green())
+                await interaction.followup.send(embed=embed, ephemeral=True)
+
+                # Log action
+                await self.log_moderation_action(
+                    interaction.guild,
+                    "Global Unban",
+                    interaction.user,
+                    await self.bot.fetch_user(user_id_int),
+                    reason
+                )
+
+            except Exception as e:
+                return await interaction.followup.send(
+                    embed=discord.Embed(
+                        description=f"❌ Failed to process global unban: {e}",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
+
+        else:
+            # Regular single-guild unban
+            guild = interaction.guild
+            try:
+                # guild.bans() is an async iterator in newer libraries
+                ban_entries = [entry async for entry in guild.bans()]
+
+                # See if user is actually banned
+                banned_user = None
+                for entry in ban_entries:
+                    if entry.user.id == user_id_int:
+                        banned_user = entry.user
+                        break
+
+                if not banned_user:
+                    return await interaction.followup.send(
+                        embed=discord.Embed(
+                            description=f"❌ User `{user_id_int}` is not banned here.",
+                            color=discord.Color.red()
+                        ),
+                        ephemeral=True
+                    )
+
+                await guild.unban(banned_user, reason=reason)
+                case_id = await self.db.add_case(
+                    guild.id,
+                    banned_user.id,
+                    interaction.user.id,
+                    "unban",
+                    reason
+                )
+
+                embed = discord.Embed(
+                    description=(
+                        f"🔓 **Unbanned** <@{banned_user.id}> (ID: {banned_user.id})\n"
+                        f"**Reason:** {reason}\n"
+                        f"**Case:** `{case_id}`"
+                    ),
+                    color=discord.Color.green()
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+
+                # Log action
+                await self.log_moderation_action(
+                    guild,
+                    "Unban",
+                    interaction.user,
+                    banned_user,
+                    reason
+                )
+
+            except discord.Forbidden:
+                return await interaction.followup.send(
+                    embed=discord.Embed(
+                        description="❌ Missing permission to unban.",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
+            except discord.HTTPException as ex:
+                return await interaction.followup.send(
+                    embed=discord.Embed(
+                        description=f"❌ Failed to unban user: {ex}",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
 
     #
     # parse_duration
@@ -1479,7 +1581,7 @@ class Moderation(commands.Cog, name="moderation"):
             self.logger.error(
                 f"Unhandled error in {interaction.command.name}: {error} | "
                 f"User: {interaction.user} ({interaction.user.id}) | "
-                f"Guild: {interaction.guild.name if interaction.guild else 'DM'}"
+                f"Guild: {interaction.guild.name} ({interaction.guild.id})"
             )
 
         # Add error context to embed

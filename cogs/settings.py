@@ -205,20 +205,37 @@ class Settings(commands.Cog):
             channels_display.append(f"and {len(channels) - max_channels} more...")
         return ", ".join(channels_display)
 
-    async def create_moderation_settings_embed(self, guild: discord.Guild) -> discord.Embed:
+    async def create_moderation_settings_embed(self, guild: discord.Guild, page: int = 1) -> discord.Embed:
         settings = await self.db.get_server_settings(guild.id)
-        ch_id = settings.get('mod_log_channel_id')
-        ch = f"<#{ch_id}>" if ch_id else "❌ Not Set"
-        roles = await self.db.get_moderation_allowed_roles(guild.id)
-        rd = self.format_role_list(roles)
-
+        
         embed = discord.Embed(
             title="⚙️ Moderation Settings",
             color=discord.Color.blue(),
-            description="Configure moderation settings below."
+            description=f"Page {page}/2 • Configure moderation settings below."
         )
-        embed.add_field(name="📝 Log Channel", value=ch, inline=False)
-        embed.add_field(name="👥 Allowed Roles", value=rd, inline=False)
+
+        if page == 1:
+            ch_id = settings.get('mod_log_channel_id')
+            ch = f"<#{ch_id}>" if ch_id else "❌ Not Set"
+            roles = await self.db.get_moderation_allowed_roles(guild.id)
+            rd = self.format_role_list(roles)
+            embed.add_field(name="📝 Log Channel", value=ch, inline=False)
+            embed.add_field(name="👥 Allowed Roles", value=rd, inline=False)
+        else:
+            global_bans_enabled = settings.get('global_bans_enabled', True)
+            status = "✅ Enabled" if global_bans_enabled else "❌ Disabled"
+            embed.add_field(name="🌐 Global Bans Status", value=status, inline=False)
+            embed.add_field(
+                name="ℹ️ Info",
+                value=(
+                    "When enabled, this server participates in the global ban system:\n"
+                    "• Users can be banned across all participating servers\n"
+                    "• Global bans from other servers will be enforced here\n"
+                    "• Moderators can issue and remove global bans"
+                ),
+                inline=False
+            )
+
         embed.set_footer(text="Use the buttons below to manage settings")
         return embed
 
@@ -1556,9 +1573,38 @@ class ModerationSettingsView(discord.ui.View):
         self.guild = guild
         self.settings_cog = settings_cog
         self.message = None
+        self.page = 1
+        self.setup_buttons()
 
-    @discord.ui.button(label="Set Log Channel", style=discord.ButtonStyle.primary, emoji="📌")
-    async def set_log_channel_btn(self, interaction: discord.Interaction, _):
+    def setup_buttons(self):
+        self.clear_items()
+        
+        if self.page == 1:
+            # General Settings
+            set_log = discord.ui.Button(label="Set Log Channel", style=discord.ButtonStyle.primary, emoji="📌", row=0)
+            set_log.callback = self.set_log_channel_btn
+            self.add_item(set_log)
+
+            manage_roles = discord.ui.Button(label="Manage Allowed Roles", style=discord.ButtonStyle.primary, emoji="👥", row=0)
+            manage_roles.callback = self.manage_allowed_roles_btn
+            self.add_item(manage_roles)
+        
+        elif self.page == 2:
+            # Global Ban Settings
+            toggle_global = discord.ui.Button(label="Toggle Global Bans", style=discord.ButtonStyle.primary, emoji="🌐", row=0)
+            toggle_global.callback = self.toggle_global_bans_btn
+            self.add_item(toggle_global)
+
+        # Navigation
+        prev_button = discord.ui.Button(label="Previous", style=discord.ButtonStyle.secondary, emoji="◀️", row=1, disabled=(self.page <= 1))
+        prev_button.callback = self.prev_page_btn
+        self.add_item(prev_button)
+
+        next_button = discord.ui.Button(label="Next", style=discord.ButtonStyle.secondary, emoji="▶️", row=1, disabled=(self.page >= 2))
+        next_button.callback = self.next_page_btn
+        self.add_item(next_button)
+
+    async def set_log_channel_btn(self, interaction: discord.Interaction):
         if self.message:
             await interaction.response.send_modal(BaseChannelModal(
                 db=self.db,
@@ -1569,8 +1615,7 @@ class ModerationSettingsView(discord.ui.View):
                 title="Set Moderation Log Channel"
             ))
 
-    @discord.ui.button(label="Manage Allowed Roles", style=discord.ButtonStyle.primary, emoji="👥")
-    async def manage_allowed_roles_btn(self, interaction: discord.Interaction, _):
+    async def manage_allowed_roles_btn(self, interaction: discord.Interaction):
         if self.message:
             await interaction.response.send_modal(BaseRoleManagementModal(
                 db=self.db,
@@ -1582,10 +1627,35 @@ class ModerationSettingsView(discord.ui.View):
                 settings_cog=self.settings_cog
             ))
 
+    async def toggle_global_bans_btn(self, interaction: discord.Interaction):
+        if self.message:
+            settings = await self.db.get_server_settings(self.guild.id)
+            current = settings.get('global_bans_enabled', True)  # Default to True
+            await self.db.update_server_setting(self.guild.id, 'global_bans_enabled', not current)
+            await self.async_update_view()
+            await interaction.response.send_message(
+                f"Global bans {'disabled' if current else 'enabled'} for this server.",
+                ephemeral=True
+            )
+
+    async def prev_page_btn(self, interaction: discord.Interaction):
+        if self.page > 1:
+            self.page -= 1
+            self.setup_buttons()
+            await self.async_update_view()
+            await interaction.response.defer()
+
+    async def next_page_btn(self, interaction: discord.Interaction):
+        if self.page < 2:
+            self.page += 1
+            self.setup_buttons()
+            await self.async_update_view()
+            await interaction.response.defer()
+
     async def async_update_view(self):
         if self.message:
             try:
-                embed = await self.settings_cog.create_moderation_settings_embed(self.guild)
+                embed = await self.settings_cog.create_moderation_settings_embed(self.guild, self.page)
                 try:
                     await self.message.edit(embed=embed, view=self)
                 except discord.NotFound:
