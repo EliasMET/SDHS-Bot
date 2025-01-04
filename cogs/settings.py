@@ -686,26 +686,188 @@ class DeleteConfirmationView(discord.ui.View):
 
     @discord.ui.button(label="Confirm Delete", style=discord.ButtonStyle.danger, emoji="⚠️")
     async def confirm_btn(self, interaction: discord.Interaction, _):
-        await self.db.delete_tryout_group(self.guild.id, self.group[0])
-        embed = discord.Embed(
-            title="✅ Group Deleted",
-            description=f"Successfully deleted group: **{self.group[2]}**",
-            color=discord.Color.green()
-        )
-        # Return to group selection
-        view = TryoutGroupSelectView(self.db, self.guild, self.settings_cog)
-        await view.update_group_options()
-        await interaction.response.edit_message(embed=embed, view=view)
-        view.message = interaction.message
-        await self.update_callback()
+        try:
+            # Try to delete the group
+            try:
+                await self.db.delete_tryout_group(self.guild.id, self.group[0])
+                logger.debug(f"Successfully deleted group {self.group[0]} from database")
+            except Exception as e:
+                logger.error(f"Error deleting group {self.group[0]} from database: {e}")
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="❌ Error",
+                        description="Failed to delete the group. Please try again.",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
+                return
+
+            # Create success embed
+            embed = discord.Embed(
+                title="✅ Group Deleted",
+                description=f"Successfully deleted group: **{self.group[2]}**",
+                color=discord.Color.green()
+            )
+
+            # Return to group selection with proper error handling
+            try:
+                view = TryoutGroupSelectView(self.db, self.guild, self.settings_cog)
+                await view.update_group_options()
+                await interaction.response.edit_message(embed=embed, view=view)
+                view.message = interaction.message
+                
+                # Update callback with error handling
+                try:
+                    await self.update_callback()
+                except Exception as e:
+                    logger.debug(f"Error in update callback after group deletion: {e}")
+                    # Don't raise the error since the deletion was successful
+            
+            except discord.NotFound:
+                logger.debug("Could not edit original message after group deletion - message not found")
+                # Try to send a new message instead
+                try:
+                    await interaction.response.send_message(
+                        embed=discord.Embed(
+                            title="✅ Group Deleted",
+                            description="The group was deleted successfully. Please reopen the settings to see the changes.",
+                            color=discord.Color.green()
+                        ),
+                        ephemeral=True
+                    )
+                except discord.InteractionResponded:
+                    try:
+                        await interaction.followup.send(
+                            embed=discord.Embed(
+                                title="✅ Group Deleted",
+                                description="The group was deleted successfully. Please reopen the settings to see the changes.",
+                                color=discord.Color.green()
+                            ),
+                            ephemeral=True
+                        )
+                    except Exception as e:
+                        logger.debug(f"Could not send followup message after group deletion: {e}")
+            
+            except Exception as e:
+                logger.error(f"Error updating view after group deletion: {e}")
+                # Try to send an error message
+                try:
+                    await interaction.response.send_message(
+                        embed=discord.Embed(
+                            title="⚠️ Partial Success",
+                            description="The group was deleted but there was an error updating the view. Please reopen the settings.",
+                            color=discord.Color.yellow()
+                        ),
+                        ephemeral=True
+                    )
+                except discord.InteractionResponded:
+                    try:
+                        await interaction.followup.send(
+                            embed=discord.Embed(
+                                title="⚠️ Partial Success",
+                                description="The group was deleted but there was an error updating the view. Please reopen the settings.",
+                                color=discord.Color.yellow()
+                            ),
+                            ephemeral=True
+                        )
+                    except Exception as e:
+                        logger.debug(f"Could not send error message after group deletion: {e}")
+
+        except Exception as e:
+            logger.error(f"Unexpected error in delete confirmation: {e}")
+            # Try to send an error message
+            try:
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="❌ Error",
+                        description="An unexpected error occurred. Please try again.",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
+            except discord.InteractionResponded:
+                try:
+                    await interaction.followup.send(
+                        embed=discord.Embed(
+                            title="❌ Error",
+                            description="An unexpected error occurred. Please try again.",
+                            color=discord.Color.red()
+                        ),
+                        ephemeral=True
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not send error message: {e}")
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def cancel_btn(self, interaction: discord.Interaction, _):
-        # Return to group management
-        view = GroupManagementView(self.db, self.guild, self.group, self.update_callback, self.settings_cog)
-        embed = await view.create_group_embed()
-        await interaction.response.edit_message(embed=embed, view=view)
-        view.message = interaction.message
+        try:
+            # Return to group management with error handling
+            view = GroupManagementView(self.db, self.guild, self.group, self.update_callback, self.settings_cog)
+            embed = await view.create_group_embed()
+            
+            try:
+                await interaction.response.edit_message(embed=embed, view=view)
+                view.message = interaction.message
+            except discord.NotFound:
+                logger.debug("Could not edit original message when canceling deletion - message not found")
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="⚠️ Navigation Error",
+                        description="Could not return to the previous view. Please reopen the settings.",
+                        color=discord.Color.yellow()
+                    ),
+                    ephemeral=True
+                )
+            except Exception as e:
+                logger.error(f"Error returning to group management view: {e}")
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="⚠️ Navigation Error",
+                        description="Could not return to the previous view. Please reopen the settings.",
+                        color=discord.Color.yellow()
+                    ),
+                    ephemeral=True
+                )
+        
+        except Exception as e:
+            logger.error(f"Unexpected error in cancel button: {e}")
+            try:
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="❌ Error",
+                        description="An unexpected error occurred. Please reopen the settings.",
+                        color=discord.Color.red()
+                    ),
+                    ephemeral=True
+                )
+            except discord.InteractionResponded:
+                try:
+                    await interaction.followup.send(
+                        embed=discord.Embed(
+                            title="❌ Error",
+                            description="An unexpected error occurred. Please reopen the settings.",
+                            color=discord.Color.red()
+                        ),
+                        ephemeral=True
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not send error message: {e}")
+
+    async def on_timeout(self):
+        try:
+            for child in self.children:
+                child.disabled = True
+            
+            # Try to update the view with disabled buttons
+            try:
+                await self.message.edit(view=self)
+            except discord.NotFound:
+                logger.debug("Could not disable buttons on timeout - message not found")
+            except Exception as e:
+                logger.debug(f"Error disabling buttons on timeout: {e}")
+        except Exception as e:
+            logger.debug(f"Unexpected error in timeout handler: {e}")
 
 class EditGroupNameModal(discord.ui.Modal):
     name = discord.ui.TextInput(
