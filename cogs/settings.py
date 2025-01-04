@@ -1619,8 +1619,17 @@ class ModerationSettingsView(discord.ui.View):
             settings = await self.db.get_server_settings(self.guild.id)
             current = settings.get('global_bans_enabled', True)
             await self.db.update_server_setting(self.guild.id, 'global_bans_enabled', not current)
-            await self.async_update_view()
-            await interaction.response.defer()
+            
+            # Update the embed and view
+            embed = await self.settings_cog.create_moderation_settings_embed(self.guild, self.page)
+            await interaction.response.edit_message(embed=embed, view=self)
+            self.message = await interaction.original_response()
+            
+            # Send confirmation message
+            await interaction.followup.send(
+                f"Global bans {'disabled' if current else 'enabled'}.",
+                ephemeral=True
+            )
 
     async def prev_page_btn(self, interaction: discord.Interaction):
         if self.page > 1:
