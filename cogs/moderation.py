@@ -117,9 +117,7 @@ class Moderation(commands.Cog, name="moderation"):
             "9": "Follow Channel-Specific Guidelines - Use the correct channels for your posts to maintain organization.",
             "10": "No Disruptive Actions - Disruptive behaviors like trolling, raiding, or intentionally disturbing events will not be tolerated."
         }
-
-        self.BanReasonSelect = self.BanView.BanReasonSelect
-        self.BanView = self.BanView
+        self.db = None  # Will be set in cog_load
 
     async def check_global_ban_permission(self, user_id: int) -> bool:
         """Check if a user is authorized to use global ban commands"""
