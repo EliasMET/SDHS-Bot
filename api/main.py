@@ -31,6 +31,18 @@ JWT_SECRET = os.getenv("JWT_SECRET", "your-secret-key")  # Change in production
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION = 24  # hours
 
+class ServerSettings(BaseModel):
+    """Server settings model"""
+    automod_enabled: bool = Field(default=False)
+    automod_logging_enabled: bool = Field(default=False)
+    automod_log_channel_id: Optional[str] = None
+    tryout_channel_id: Optional[str] = None
+    mod_log_channel_id: Optional[str] = None
+    automod_mute_duration: int = Field(default=300)  # 5 minutes
+    automod_spam_limit: int = Field(default=5)
+    automod_spam_window: int = Field(default=5)
+    global_bans_enabled: bool = Field(default=False)
+
 class TryoutGroup(BaseModel):
     """A tryout group for a specific event or role"""
     event_name: str = Field(..., description="Name of the event or role")
@@ -188,6 +200,21 @@ async def get_server_settings(
         logger.error(f"Error getting server settings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.put("/server/{server_id}/settings")
+async def update_server_settings(
+    server_id: int,
+    settings: ServerSettings,
+    token_data: TokenData = Depends(verify_token),
+    db: DatabaseManager = Depends(get_database)
+):
+    try:
+        for setting_name, value in settings.dict().items():
+            await db.update_server_setting(server_id, setting_name, value)
+        return {"message": "Settings updated successfully"}
+    except Exception as e:
+        logger.error(f"Error updating server settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/server/{server_id}/tryout-groups",
     response_model=List[dict],
     tags=["tryouts"],
@@ -228,7 +255,7 @@ async def create_tryout_group(
     db: DatabaseManager = Depends(get_database)
 ):
     try:
-        # Generate a unique group ID (you might want to implement this in the database manager)
+        # Generate a unique group ID
         import uuid
         group_id = str(uuid.uuid4())[:8].upper()
         
@@ -250,183 +277,6 @@ async def create_tryout_group(
         }
     except Exception as e:
         logger.error(f"Error creating tryout group: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/server/{server_id}/tryout-groups/{group_id}",
-    response_model=dict,
-    tags=["tryouts"],
-    summary="Update a tryout group",
-    description="Updates an existing tryout group's settings."
-)
-async def update_tryout_group(
-    server_id: int,
-    group_id: str,
-    group: TryoutGroupUpdate,
-    token_data: TokenData = Depends(verify_token),
-    db: DatabaseManager = Depends(get_database)
-):
-    try:
-        existing_group = await db.get_tryout_group(server_id, group_id)
-        if not existing_group:
-            raise HTTPException(status_code=404, detail="Tryout group not found")
-        
-        await db.update_tryout_group(
-            server_id,
-            group_id,
-            group.description or existing_group[1],
-            group.event_name or existing_group[2],
-            group.requirements or existing_group[3]
-        )
-        
-        if group.ping_roles is not None:
-            # Remove existing ping roles
-            current_roles = existing_group[4]
-            for role_id in current_roles:
-                await db.remove_group_ping_role(server_id, group_id, int(role_id))
-            
-            # Add new ping roles
-            for role_id in group.ping_roles:
-                await db.add_group_ping_role(server_id, group_id, int(role_id))
-        
-        return {"message": "Tryout group updated successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating tryout group: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/server/{server_id}/tryout-groups/{group_id}",
-    response_model=dict,
-    tags=["tryouts"],
-    summary="Delete a tryout group",
-    description="Deletes a tryout group and all associated data."
-)
-async def delete_tryout_group(
-    server_id: int,
-    group_id: str,
-    token_data: TokenData = Depends(verify_token),
-    db: DatabaseManager = Depends(get_database)
-):
-    try:
-        await db.delete_tryout_group(server_id, group_id)
-        return {"message": "Tryout group deleted successfully"}
-    except Exception as e:
-        logger.error(f"Error deleting tryout group: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/server/{server_id}/active-tryouts",
-    response_model=List[dict],
-    tags=["tryouts"],
-    summary="Get active tryout sessions",
-    description="Returns a list of all active tryout sessions for the specified server."
-)
-async def get_active_tryouts(
-    server_id: int,
-    token_data: TokenData = Depends(verify_token),
-    db: DatabaseManager = Depends(get_database)
-):
-    try:
-        sessions = await db.get_active_tryout_sessions(server_id)
-        return sessions
-    except Exception as e:
-        logger.error(f"Error getting active tryouts: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/server/{server_id}/tryout-sessions",
-    response_model=dict,
-    tags=["tryouts"],
-    summary="Create a new tryout session",
-    description="Creates a new tryout session for a specific tryout group."
-)
-async def create_tryout_session(
-    server_id: int,
-    session: TryoutSession,
-    token_data: TokenData = Depends(verify_token),
-    db: DatabaseManager = Depends(get_database)
-):
-    try:
-        # Get the tryout group to verify it exists and get its name
-        group = await db.get_tryout_group(server_id, session.group_id)
-        if not group:
-            raise HTTPException(status_code=404, detail="Tryout group not found")
-        
-        # Create Discord invite if voice channel is specified
-        voice_invite = None
-        if session.voice_channel_id:
-            try:
-                channel = bot_client.get_channel(int(session.voice_channel_id))
-                if channel and isinstance(channel, discord.VoiceChannel):
-                    invite = await channel.create_invite(
-                        max_age=3600,  # 1 hour
-                        max_uses=0,    # unlimited uses
-                        unique=True
-                    )
-                    voice_invite = str(invite)
-            except Exception as e:
-                logger.error(f"Error creating voice channel invite: {e}")
-        
-        session_id = await db.create_tryout_session(
-            guild_id=server_id,
-            host_id=int(session.host_id),
-            group_id=session.group_id,
-            group_name=group[2],  # event_name from the group
-            channel_id=int(session.channel_id),
-            voice_channel_id=int(session.voice_channel_id) if session.voice_channel_id else None,
-            lock_timestamp=session.lock_timestamp,
-            requirements=session.requirements,
-            description=session.description,
-            message_id=0,  # This will be updated when the bot posts the message
-            voice_invite=voice_invite
-        )
-        
-        return {
-            "session_id": session_id,
-            "voice_invite": voice_invite,
-            "message": "Tryout session created successfully"
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating tryout session: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/server/{server_id}/warnings/{user_id}")
-async def get_user_warnings(
-    server_id: int,
-    user_id: int,
-    token_data: TokenData = Depends(verify_token),
-    db: DatabaseManager = Depends(get_database)
-):
-    try:
-        warnings = await db.get_warnings(user_id, server_id)
-        return [
-            {
-                "user_id": warning[0],
-                "server_id": warning[1],
-                "moderator_id": warning[2],
-                "reason": warning[3],
-                "created_at": warning[4],
-                "id": warning[5]
-            }
-            for warning in warnings
-        ]
-    except Exception as e:
-        logger.error(f"Error getting user warnings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/server/{server_id}/command-stats")
-async def get_command_stats(
-    server_id: int,
-    days: Optional[int] = 30,
-    token_data: TokenData = Depends(verify_token),
-    db: DatabaseManager = Depends(get_database)
-):
-    try:
-        since = datetime.utcnow() - timedelta(days=days)
-        stats = await db.get_command_usage_stats(guild_id=server_id, since=since)
-        return stats
-    except Exception as e:
-        logger.error(f"Error getting command stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/server/{server_id}/cases")
@@ -455,6 +305,34 @@ async def get_server_cases(
         logger.error(f"Error getting server cases: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/server/{server_id}/statistics/commands")
+async def get_server_command_stats(
+    server_id: int,
+    days: Optional[int] = 30,
+    token_data: TokenData = Depends(verify_token),
+    db: DatabaseManager = Depends(get_database)
+):
+    try:
+        since = datetime.utcnow() - timedelta(days=days)
+        stats = await db.get_command_usage_stats(guild_id=server_id, since=since)
+        
+        # Format the response
+        formatted_stats = []
+        for stat in stats:
+            formatted_stats.append({
+                "command": stat["_id"],
+                "total_uses": stat["total_uses"],
+                "successful_uses": stat["successful_uses"],
+                "failed_uses": stat["failed_uses"],
+                "unique_users": stat["unique_users"],
+                "average_response_time": 0  # Default value since we don't track this yet
+            })
+        
+        return formatted_stats
+    except Exception as e:
+        logger.error(f"Error getting command stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Add this after the JWT settings
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
@@ -477,7 +355,6 @@ async def on_ready():
 import asyncio
 asyncio.create_task(bot_client.start(DISCORD_BOT_TOKEN))
 
-# Add this new endpoint after the other endpoints
 @app.get("/bot/servers")
 async def get_bot_servers(token_data: TokenData = Depends(verify_token)):
     try:

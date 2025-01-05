@@ -8,15 +8,10 @@ import { Toaster } from 'react-hot-toast'
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: (failureCount, error) => {
-        // Don't retry on 401 errors
-        if (error instanceof Error && error.message.includes('401')) {
-          return false
-        }
-        return failureCount < 3
-      },
+      gcTime: 5 * 60 * 1000, // 5 minutes
+      staleTime: 60 * 1000, // 1 minute
+      retry: 2,
       refetchOnWindowFocus: false,
-      staleTime: 30000,
     },
   },
 })

@@ -2,14 +2,19 @@
 const nextConfig = {
   reactStrictMode: true,
   images: {
+    domains: ['cdn.discordapp.com'],
+    dangerouslyAllowSVG: true,
     remotePatterns: [
       {
         protocol: 'https',
         hostname: 'cdn.discordapp.com',
-        pathname: '**',
+        port: '',
+        pathname: '/icons/**',
       },
     ],
   },
+  swcMinify: true,
+  poweredByHeader: false,
 }
 
 module.exports = nextConfig 
