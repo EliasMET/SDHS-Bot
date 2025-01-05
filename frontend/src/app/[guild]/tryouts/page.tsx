@@ -3,14 +3,14 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
-import { Separator } from '@/components/ui/separator';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { useToast } from '@/components/ui/use-toast';
+import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
+import { Button } from '../../../components/ui/button';
+import { Input } from '../../../components/ui/input';
+import { Textarea } from '../../../components/ui/textarea';
+import { Label } from '../../../components/ui/label';
+import { Separator } from '../../../components/ui/separator';
+import { ScrollArea } from '../../../components/ui/scroll-area';
+import { useToast } from '../../../components/ui/use-toast';
 import { Loader2, Plus, Trash2, Edit2, Save } from 'lucide-react';
 import {
   Dialog,
@@ -20,8 +20,8 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { Badge } from '@/components/ui/badge';
+} from '../../../components/ui/dialog';
+import { Badge } from '../../../components/ui/badge';
 import { useTheme } from 'next-themes';
 
 interface TryoutGroup {
@@ -45,9 +45,18 @@ interface TryoutSession {
   voice_invite?: string;
 }
 
+interface Session {
+  accessToken?: string;
+  user?: {
+    id: string;
+    name: string;
+    email: string;
+  };
+}
+
 export default function TryoutsPage() {
   const { guild } = useParams();
-  const { data: session } = useSession();
+  const { data: session } = useSession() as { data: Session | null };
   const { toast } = useToast();
   const { theme } = useTheme();
   
@@ -66,7 +75,7 @@ export default function TryoutsPage() {
   const [newPingRole, setNewPingRole] = useState('');
 
   useEffect(() => {
-    if (session?.access_token && guild) {
+    if (session?.accessToken && guild) {
       fetchGroups();
       fetchActiveSessions();
     }
@@ -76,7 +85,7 @@ export default function TryoutsPage() {
     try {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/server/${guild}/tryout-groups`, {
         headers: {
-          'Authorization': `Bearer ${session?.access_token}`,
+          'Authorization': `Bearer ${session?.accessToken}`,
         },
       });
       if (!response.ok) throw new Error('Failed to fetch tryout groups');
@@ -98,7 +107,7 @@ export default function TryoutsPage() {
     try {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/server/${guild}/active-tryouts`, {
         headers: {
-          'Authorization': `Bearer ${session?.access_token}`,
+          'Authorization': `Bearer ${session?.accessToken}`,
         },
       });
       if (!response.ok) throw new Error('Failed to fetch active sessions');
@@ -119,7 +128,7 @@ export default function TryoutsPage() {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/server/${guild}/tryout-groups`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${session?.access_token}`,
+          'Authorization': `Bearer ${session?.accessToken}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(newGroup),
@@ -155,7 +164,7 @@ export default function TryoutsPage() {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/server/${guild}/tryout-groups/${group.group_id}`, {
         method: 'PUT',
         headers: {
-          'Authorization': `Bearer ${session?.access_token}`,
+          'Authorization': `Bearer ${session?.accessToken}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(group),
@@ -187,7 +196,7 @@ export default function TryoutsPage() {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/server/${guild}/tryout-groups/${groupId}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${session?.access_token}`,
+          'Authorization': `Bearer ${session?.accessToken}`,
         },
       });
       
@@ -241,7 +250,7 @@ export default function TryoutsPage() {
                 <Input
                   id="event_name"
                   value={newGroup.event_name}
-                  onChange={(e) => setNewGroup({ ...newGroup, event_name: e.target.value })}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewGroup({ ...newGroup, event_name: e.target.value })}
                 />
               </div>
               <div>
@@ -249,7 +258,7 @@ export default function TryoutsPage() {
                 <Textarea
                   id="description"
                   value={newGroup.description}
-                  onChange={(e) => setNewGroup({ ...newGroup, description: e.target.value })}
+                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setNewGroup({ ...newGroup, description: e.target.value })}
                 />
               </div>
               <div>
@@ -257,7 +266,7 @@ export default function TryoutsPage() {
                 <div className="flex gap-2 mb-2">
                   <Input
                     value={newRequirement}
-                    onChange={(e) => setNewRequirement(e.target.value)}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewRequirement(e.target.value)}
                     placeholder="Add requirement"
                   />
                   <Button
@@ -301,7 +310,7 @@ export default function TryoutsPage() {
                 <div className="flex gap-2 mb-2">
                   <Input
                     value={newPingRole}
-                    onChange={(e) => setNewPingRole(e.target.value)}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewPingRole(e.target.value)}
                     placeholder="Role ID"
                   />
                   <Button
@@ -361,7 +370,7 @@ export default function TryoutsPage() {
                 {editingGroup?.group_id === group.group_id ? (
                   <Input
                     value={editingGroup.event_name}
-                    onChange={(e) =>
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                       setEditingGroup({ ...editingGroup, event_name: e.target.value })
                     }
                   />
@@ -401,7 +410,7 @@ export default function TryoutsPage() {
               {editingGroup?.group_id === group.group_id ? (
                 <Textarea
                   value={editingGroup.description}
-                  onChange={(e) =>
+                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
                     setEditingGroup({ ...editingGroup, description: e.target.value })
                   }
                 />

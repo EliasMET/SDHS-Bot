@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import { SunIcon, MoonIcon, ComputerDesktopIcon } from '@heroicons/react/24/outline';
 import { useThemeStore } from '@/lib/store';
 
-export default function ThemeSwitcher() {
-  const [mounted, setMounted] = useState(false);
+export default function ThemeSwitcher(): JSX.Element {
+  const [mounted, setMounted] = useState<boolean>(false);
   const { theme, setTheme } = useThemeStore();
 
   // Ensure component is mounted before rendering to avoid hydration mismatch
@@ -25,6 +25,7 @@ export default function ThemeSwitcher() {
             : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
         }`}
         title="Light mode"
+        type="button"
       >
         <SunIcon className="h-5 w-5" />
       </button>
@@ -36,6 +37,7 @@ export default function ThemeSwitcher() {
             : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
         }`}
         title="Dark mode"
+        type="button"
       >
         <MoonIcon className="h-5 w-5" />
       </button>
@@ -47,6 +49,7 @@ export default function ThemeSwitcher() {
             : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
         }`}
         title="System theme"
+        type="button"
       >
         <ComputerDesktopIcon className="h-5 w-5" />
       </button>
