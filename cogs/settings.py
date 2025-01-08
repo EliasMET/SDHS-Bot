@@ -780,6 +780,7 @@ class GroupManagementView(discord.ui.View):
         self.update_callback = update_callback
         self.settings_cog = settings_cog
         self.message = None
+        self.logger = logging.getLogger('discord_bot')
 
     async def create_group_embed(self) -> discord.Embed:
         group_id, description, event_name, requirements, ping_roles = self.group
@@ -1102,6 +1103,7 @@ class EditGroupNameModal(discord.ui.Modal):
         self.group = group
         self.update_callback = update_callback
         self.settings_cog = settings_cog
+        self.logger = logging.getLogger('discord_bot')
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.db.update_tryout_group(
@@ -1137,6 +1139,7 @@ class EditGroupDescriptionModal(discord.ui.Modal):
         self.group = group
         self.update_callback = update_callback
         self.settings_cog = settings_cog
+        self.logger = logging.getLogger('discord_bot')
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.db.update_tryout_group(
@@ -1172,6 +1175,7 @@ class EditGroupRequirementsModal(discord.ui.Modal):
         self.group = group
         self.update_callback = update_callback
         self.settings_cog = settings_cog
+        self.logger = logging.getLogger('discord_bot')
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -1273,6 +1277,7 @@ class EditGroupPingRolesModal(discord.ui.Modal):
         self.group = group
         self.update_callback = update_callback
         self.settings_cog = settings_cog
+        self.logger = logging.getLogger('discord_bot')
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
