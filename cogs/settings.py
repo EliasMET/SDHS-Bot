@@ -426,17 +426,65 @@ class BaseChannelModal(discord.ui.Modal):
             else:
                 await self.db.update_server_setting(self.guild.id, self.setting_name, str(ch.id))
 
+            # Create success embed
+            success_embed = discord.Embed(
+                title="Channel Set", 
+                description=f"Channel set to {ch.mention}.", 
+                color=discord.Color.green()
+            )
+
+            # Update the original settings view
+            if hasattr(self, 'settings_cog'):
+                if self.setting_name == 'tryout_log_channel_id':
+                    embed = await self.settings_cog.create_tryout_settings_embed(self.guild)
+                    view = TryoutSettingsView(self.db, self.guild, self.settings_cog)
+                    await interaction.response.edit_message(embed=embed, view=view)
+                    view.message = await interaction.original_response()
+                    await interaction.followup.send(embed=success_embed, ephemeral=True)
+                else:
+                    await interaction.response.send_message(embed=success_embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=success_embed, ephemeral=True)
+
+            await self.update_callback()
+        except discord.NotFound:
+            # If the message is not found, send a new response
             await interaction.response.send_message(
-                embed=discord.Embed(title="Channel Set", description=f"Channel set to {ch.mention}.", color=discord.Color.green()),
+                embed=discord.Embed(
+                    title="Channel Updated",
+                    description=f"Channel set to {ch.mention}, but the view could not be updated. Please reopen the settings.",
+                    color=discord.Color.yellow()
+                ),
                 ephemeral=True
             )
-            await self.update_callback()
+        except discord.InteractionResponded:
+            # If we've already responded, try to send a followup
+            try:
+                await interaction.followup.send(
+                    embed=discord.Embed(
+                        title="Channel Updated",
+                        description=f"Channel set to {ch.mention}.",
+                        color=discord.Color.green()
+                    ),
+                    ephemeral=True
+                )
+            except Exception as e:
+                self.logger.debug(f"Could not send followup: {e}")
         except Exception as e:
             self.logger.error(f"Error in BaseChannelModal on_submit: {e}")
-            await interaction.response.send_message(
-                embed=discord.Embed(title="Error", description=f"Failed to set the channel: {e}", color=0xE02B2B),
-                ephemeral=True
-            )
+            try:
+                await interaction.response.send_message(
+                    embed=discord.Embed(title="Error", description=f"Failed to set the channel: {e}", color=0xE02B2B),
+                    ephemeral=True
+                )
+            except discord.InteractionResponded:
+                try:
+                    await interaction.followup.send(
+                        embed=discord.Embed(title="Error", description=f"Failed to set the channel: {e}", color=0xE02B2B),
+                        ephemeral=True
+                    )
+                except Exception as e2:
+                    self.logger.debug(f"Could not send error message: {e2}")
 
 class BaseRoleManagementModal(discord.ui.Modal):
     action = discord.ui.TextInput(
