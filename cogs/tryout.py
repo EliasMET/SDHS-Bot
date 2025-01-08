@@ -99,13 +99,7 @@ class PaginatedDropdownView(discord.ui.View):
         channel = self.bot.get_channel(self.channel_id)
         if channel:
             try:
-                # Send tryout log first
-                logger.info(f"Attempting to send tryout log for group {group_info['event_name']} in guild {guild_id}")
-                tryout_cog = self.bot.get_cog('tryout')
-                await tryout_cog.send_tryout_log(guild_id, interaction.user, group_info, lock_timestamp)
-                logger.info(f"Successfully sent tryout log for group {group_info['event_name']}")
-
-                # Then send the tryout message
+                # Send the tryout message first
                 message = await channel.send(tryout_message)
                 
                 # Log the tryout session
@@ -123,8 +117,14 @@ class PaginatedDropdownView(discord.ui.View):
                     voice_invite=voice_invite
                 )
 
+                # Send log message with session ID
+                logger.info(f"Attempting to send tryout log for group {group_info['event_name']} in guild {guild_id}")
+                tryout_cog = self.bot.get_cog('tryout')
+                await tryout_cog.send_tryout_log(guild_id, interaction.user, group_info, lock_timestamp, session_id)
+                logger.info(f"Successfully sent tryout log for group {group_info['event_name']}")
+
                 # Schedule message deletion
-                total_delete_delay = (self.lock_time + 60) * 60  # Convert to seconds and add 1 hour
+                total_delete_delay = (self.lock_time + 25) * 60  # Convert to seconds (lock time + 25 minutes)
                 task = asyncio.create_task(self.bot.get_cog('tryout').delete_tryout_message(channel.id, message.id, total_delete_delay))
                 self.bot.get_cog('tryout').message_deletion_tasks[message.id] = task
 
@@ -209,7 +209,7 @@ class Tryout(commands.Cog, name="tryout"):
         except Exception as e:
             self.logger.error(f"Failed to delete tryout message {message_id}: {e}")
 
-    async def send_tryout_log(self, guild_id: int, host_user, group_info: dict, lock_timestamp: datetime):
+    async def send_tryout_log(self, guild_id: int, host_user, group_info: dict, lock_timestamp: datetime, session_id: str = None):
         """Send a log message to the configured tryout log channel"""
         try:
             self.logger.info(f"Attempting to send tryout log for guild {guild_id}")
@@ -229,18 +229,13 @@ class Tryout(commands.Cog, name="tryout"):
                 return
 
             embed = discord.Embed(
-                title="🎯 Tryout Started",
+                title=f"🎯 {group_info['event_name']}",
                 color=discord.Color.blue(),
-                timestamp=discord.utils.utcnow()
+                description=f"{host_user.mention} • <t:{int(lock_timestamp.timestamp())}:R>"
             )
             
-            # Format the description to include all info in a clean way
-            description = (
-                f"**Host:** {host_user.mention}\n"
-                f"**Division:** {group_info['event_name']}\n"
-                f"**Locks:** <t:{int(lock_timestamp.timestamp())}:R>"
-            )
-            embed.description = description
+            if session_id:
+                embed.set_footer(text=f"ID: {session_id}")
 
             self.logger.info(f"Sending tryout log message to channel {log_channel.id}")
             await log_channel.send(embed=embed)
@@ -470,13 +465,7 @@ class Tryout(commands.Cog, name="tryout"):
                     )
 
                     try:
-                        # Send log message first
-                        self.logger.info(f"Attempting to send tryout log for group {group_info['event_name']} in guild {guild_id}")
-                        tryout_cog = self.bot.get_cog('tryout')
-                        await tryout_cog.send_tryout_log(guild_id, interaction.user, group_info, lock_timestamp)
-                        self.logger.info(f"Successfully sent tryout log for group {group_info['event_name']}")
-
-                        # Then send the tryout message
+                        # Send the tryout message first
                         message = await channel.send(tryout_message)
 
                         # Create tryout session
@@ -494,10 +483,15 @@ class Tryout(commands.Cog, name="tryout"):
                             voice_invite=vc_display if user_vc else None
                         )
 
+                        # Send log message with session ID
+                        logger.info(f"Attempting to send tryout log for group {group_info['event_name']} in guild {guild_id}")
+                        await self.send_tryout_log(guild_id, interaction.user, group_info, lock_timestamp, session_id)
+                        logger.info(f"Successfully sent tryout log for group {group_info['event_name']}")
+
                         # Schedule message deletion
-                        total_delete_delay = (lock_time + 60) * 60  # Convert to seconds and add 1 hour
-                        task = asyncio.create_task(self.delete_tryout_message(channel.id, message.id, total_delete_delay))
-                        self.message_deletion_tasks[message.id] = task
+                        total_delete_delay = (self.lock_time + 25) * 60  # Convert to seconds (lock time + 25 minutes)
+                        task = asyncio.create_task(self.bot.get_cog('tryout').delete_tryout_message(channel.id, message.id, total_delete_delay))
+                        self.bot.get_cog('tryout').message_deletion_tasks[message.id] = task
 
                         # Send confirmation
                         confirmation_embed = discord.Embed(
