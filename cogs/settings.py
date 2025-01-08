@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 from enum import Enum
 import traceback
+import logging
 
 class SettingsCategory(Enum):
     AUTOMOD = "automod"
@@ -596,6 +597,7 @@ class TryoutGroupSelectView(discord.ui.View):
         self.guild = guild
         self.settings_cog = settings_cog
         self.message = None
+        self.logger = logging.getLogger('discord_bot')
         self.add_group_select()
 
     def add_group_select(self):
@@ -684,8 +686,7 @@ class TryoutGroupSelectView(discord.ui.View):
                     ephemeral=True
                 )
         except Exception as e:
-            self.logger.error(f"Error in group selection callback:")
-            traceback.print_exc()
+            self.logger.error(f"Error in group selection callback: {e}", exc_info=True)
             try:
                 await interaction.followup.send(
                     embed=discord.Embed(
