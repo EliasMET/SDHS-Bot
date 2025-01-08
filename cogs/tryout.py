@@ -5,6 +5,7 @@ from discord.ext import commands
 from datetime import datetime, timedelta, timezone
 import logging
 import os
+import asyncio
 
 logger = logging.getLogger('discord_bot')
 
@@ -54,7 +55,7 @@ class PaginatedDropdownView(discord.ui.View):
 
     async def select_callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        guild_id = self.bot.guild_id
+        guild_id = interaction.guild.id
         selected_group_id = self.select.values[0]
         group_info = self.group_settings[selected_group_id]
 
@@ -98,6 +99,13 @@ class PaginatedDropdownView(discord.ui.View):
         channel = self.bot.get_channel(self.channel_id)
         if channel:
             try:
+                # Send tryout log first
+                logger.info(f"Attempting to send tryout log for group {group_info['event_name']} in guild {guild_id}")
+                tryout_cog = self.bot.get_cog('tryout')
+                await tryout_cog.send_tryout_log(guild_id, interaction.user, group_info, lock_timestamp)
+                logger.info(f"Successfully sent tryout log for group {group_info['event_name']}")
+
+                # Then send the tryout message
                 message = await channel.send(tryout_message)
                 
                 # Log the tryout session
@@ -114,6 +122,11 @@ class PaginatedDropdownView(discord.ui.View):
                     message_id=message.id,
                     voice_invite=voice_invite
                 )
+
+                # Schedule message deletion
+                total_delete_delay = (self.lock_time + 60) * 60  # Convert to seconds and add 1 hour
+                task = asyncio.create_task(self.bot.get_cog('tryout').delete_tryout_message(channel.id, message.id, total_delete_delay))
+                self.bot.get_cog('tryout').message_deletion_tasks[message.id] = task
 
                 confirmation_embed = discord.Embed(
                     title="✅ Success",
@@ -180,6 +193,61 @@ class Tryout(commands.Cog, name="tryout"):
         self.bot = bot
         self.db = None
         self.bot.guild_id = None
+        self.logger = logging.getLogger('discord_bot')
+        self.message_deletion_tasks = {}
+
+    async def delete_tryout_message(self, channel_id: int, message_id: int, delay: int):
+        """Delete a tryout message after the specified delay in seconds"""
+        await asyncio.sleep(delay)
+        try:
+            channel = self.bot.get_channel(channel_id)
+            if channel:
+                message = await channel.fetch_message(message_id)
+                if message:
+                    await message.delete()
+                    self.logger.info(f"Deleted tryout message {message_id} from channel {channel_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to delete tryout message {message_id}: {e}")
+
+    async def send_tryout_log(self, guild_id: int, host_user, group_info: dict, lock_timestamp: datetime):
+        """Send a log message to the configured tryout log channel"""
+        try:
+            self.logger.info(f"Attempting to send tryout log for guild {guild_id}")
+            
+            log_channel_id = await self.db.get_tryout_log_channel_id(guild_id)
+            self.logger.info(f"Retrieved log channel ID: {log_channel_id}")
+            
+            if not log_channel_id:
+                self.logger.warning(f"No tryout log channel configured for guild {guild_id}")
+                return
+
+            log_channel = self.bot.get_channel(log_channel_id)
+            self.logger.info(f"Retrieved channel object: {log_channel}")
+            
+            if not log_channel:
+                self.logger.warning(f"Tryout log channel {log_channel_id} not found in guild {guild_id}")
+                return
+
+            embed = discord.Embed(
+                title="🎯 Tryout Started",
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow()
+            )
+            
+            # Format the description to include all info in a clean way
+            description = (
+                f"**Host:** {host_user.mention}\n"
+                f"**Division:** {group_info['event_name']}\n"
+                f"**Locks:** <t:{int(lock_timestamp.timestamp())}:R>"
+            )
+            embed.description = description
+
+            self.logger.info(f"Sending tryout log message to channel {log_channel.id}")
+            await log_channel.send(embed=embed)
+            self.logger.info(f"Successfully sent tryout log for {group_info['event_name']} by {host_user} in guild {guild_id}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to send tryout log: {str(e)}", exc_info=True)
 
     async def cog_load(self):
         self.db = self.bot.database
@@ -402,8 +470,16 @@ class Tryout(commands.Cog, name="tryout"):
                     )
 
                     try:
-                        # Send message and create session
+                        # Send log message first
+                        self.logger.info(f"Attempting to send tryout log for group {group_info['event_name']} in guild {guild_id}")
+                        tryout_cog = self.bot.get_cog('tryout')
+                        await tryout_cog.send_tryout_log(guild_id, interaction.user, group_info, lock_timestamp)
+                        self.logger.info(f"Successfully sent tryout log for group {group_info['event_name']}")
+
+                        # Then send the tryout message
                         message = await channel.send(tryout_message)
+
+                        # Create tryout session
                         session_id = await self.db.create_tryout_session(
                             guild_id=guild_id,
                             host_id=interaction.user.id,
@@ -417,6 +493,11 @@ class Tryout(commands.Cog, name="tryout"):
                             message_id=message.id,
                             voice_invite=vc_display if user_vc else None
                         )
+
+                        # Schedule message deletion
+                        total_delete_delay = (lock_time + 60) * 60  # Convert to seconds and add 1 hour
+                        task = asyncio.create_task(self.delete_tryout_message(channel.id, message.id, total_delete_delay))
+                        self.message_deletion_tasks[message.id] = task
 
                         # Send confirmation
                         confirmation_embed = discord.Embed(

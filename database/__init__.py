@@ -137,6 +137,7 @@ class DatabaseManager:
                     "automod_logging_enabled": False,
                     "automod_log_channel_id": None,
                     "tryout_channel_id": None,
+                    "tryout_log_channel_id": None,
                     "mod_log_channel_id": None,
                     "automod_mute_duration": 3600,
                     "automod_spam_limit": 5,
@@ -891,3 +892,15 @@ class DatabaseManager:
         except Exception as e:
             self.logger.error(f"Error adding note to session {session_id}: {e}")
             return False
+
+    async def get_tryout_log_channel_id(self, server_id: int) -> Optional[int]:
+        """Get the tryout logging channel ID for a guild"""
+        data = await self._get_server_data(server_id)
+        channel_id = data["settings"].get("tryout_log_channel_id")
+        return int(channel_id) if channel_id else None
+
+    async def set_tryout_log_channel_id(self, server_id: int, channel_id: int):
+        """Set the tryout logging channel ID for a guild"""
+        data = await self._get_server_data(server_id)
+        data["settings"]["tryout_log_channel_id"] = str(channel_id)
+        await self._update_server_data(server_id, {"settings": data["settings"]})

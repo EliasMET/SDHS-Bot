@@ -276,6 +276,8 @@ class Settings(commands.Cog):
     async def create_tryout_settings_embed(self, guild: discord.Guild) -> discord.Embed:
         ch_id = await self.db.get_tryout_channel_id(guild.id)
         ch = f"<#{ch_id}>" if ch_id else "❌ Not Set"
+        log_ch_id = await self.db.get_tryout_log_channel_id(guild.id)
+        log_ch = f"<#{log_ch_id}>" if log_ch_id else "❌ Not Set"
         req = await self.db.get_tryout_required_roles(guild.id)
         req_display = self.format_role_list(req)
         groups = await self.db.get_tryout_groups(guild.id)
@@ -286,6 +288,7 @@ class Settings(commands.Cog):
             description="Configure your tryout system settings below."
         )
         embed.add_field(name="📌 Tryout Channel", value=ch, inline=False)
+        embed.add_field(name="📝 Logging Channel", value=log_ch, inline=False)
         embed.add_field(name="👥 Required Roles", value=req_display, inline=False)
         
         if groups:
@@ -398,6 +401,7 @@ class BaseChannelModal(discord.ui.Modal):
         self.setting_name = setting_name
         self.update_callback = update_callback
         self.settings_cog = settings_cog
+        self.logger = logging.getLogger('discord_bot')
 
     async def validate_channel(self, cid: str):
         if not cid.isdigit():
@@ -413,7 +417,8 @@ class BaseChannelModal(discord.ui.Modal):
             methods = {
                 'tryout_channel_id': self.db.set_tryout_channel_id,
                 'automod_log_channel_id': lambda g, c: self.db.update_server_setting(g, 'automod_log_channel_id', str(c)),
-                'mod_log_channel_id': self.db.set_mod_log_channel
+                'mod_log_channel_id': self.db.set_mod_log_channel,
+                'tryout_log_channel_id': self.db.set_tryout_log_channel_id
             }
 
             if self.setting_name in methods:
@@ -427,8 +432,7 @@ class BaseChannelModal(discord.ui.Modal):
             )
             await self.update_callback()
         except Exception as e:
-            self.logger.error("Error in BaseChannelModal on_submit:")
-            traceback.print_exc()
+            self.logger.error(f"Error in BaseChannelModal on_submit: {e}")
             await interaction.response.send_message(
                 embed=discord.Embed(title="Error", description=f"Failed to set the channel: {e}", color=0xE02B2B),
                 ephemeral=True
@@ -1429,8 +1433,9 @@ class TryoutSettingsView(discord.ui.View):
         self.guild = guild
         self.settings_cog = settings_cog
         self.message = None
+        self.logger = logging.getLogger('discord_bot')
 
-    @discord.ui.button(label="Set Tryout Channel", style=discord.ButtonStyle.primary, emoji="📌")
+    @discord.ui.button(label="Set Tryout Channel", style=discord.ButtonStyle.primary, emoji="📌", row=0)
     async def set_tryout_channel_btn(self, interaction: discord.Interaction, _):
         if self.message:
             await interaction.response.send_modal(BaseChannelModal(
@@ -1440,6 +1445,18 @@ class TryoutSettingsView(discord.ui.View):
                 update_callback=self.async_update_view,
                 settings_cog=self.settings_cog,
                 title="Set Tryout Channel"
+            ))
+
+    @discord.ui.button(label="Set Log Channel", style=discord.ButtonStyle.primary, emoji="📝", row=0)
+    async def set_log_channel_btn(self, interaction: discord.Interaction, _):
+        if self.message:
+            await interaction.response.send_modal(BaseChannelModal(
+                db=self.db,
+                guild=self.guild,
+                setting_name='tryout_log_channel_id',
+                update_callback=self.async_update_view,
+                settings_cog=self.settings_cog,
+                title="Set Tryout Log Channel"
             ))
 
     @discord.ui.button(label="Manage Required Roles", style=discord.ButtonStyle.primary, emoji="👥")
