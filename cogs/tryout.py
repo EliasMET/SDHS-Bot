@@ -6,6 +6,9 @@ from datetime import datetime, timedelta, timezone
 import logging
 import os
 import asyncio
+import matplotlib.pyplot as plt
+import io
+from collections import defaultdict
 
 logger = logging.getLogger('discord_bot')
 
@@ -208,6 +211,16 @@ class Tryout(commands.Cog, name="tryout"):
                     self.logger.info(f"Deleted tryout message {message_id} from channel {channel_id}")
         except Exception as e:
             self.logger.error(f"Failed to delete tryout message {message_id}: {e}")
+        finally:
+            # Clean up the task reference
+            if message_id in self.message_deletion_tasks:
+                del self.message_deletion_tasks[message_id]
+
+    async def schedule_message_deletion(self, channel_id: int, message_id: int, lock_time: int):
+        """Schedule a message for deletion after lock_time + 25 minutes"""
+        total_delete_delay = (lock_time + 25) * 60  # Convert to seconds (lock time + 25 minutes)
+        task = asyncio.create_task(self.delete_tryout_message(channel_id, message_id, total_delete_delay))
+        self.message_deletion_tasks[message_id] = task
 
     async def send_tryout_log(self, guild_id: int, host_user, group_info: dict, lock_timestamp: datetime, session_id: str = None):
         """Send a log message to the configured tryout log channel"""
@@ -489,9 +502,7 @@ class Tryout(commands.Cog, name="tryout"):
                         logger.info(f"Successfully sent tryout log for group {group_info['event_name']}")
 
                         # Schedule message deletion
-                        total_delete_delay = (self.lock_time + 25) * 60  # Convert to seconds (lock time + 25 minutes)
-                        task = asyncio.create_task(self.bot.get_cog('tryout').delete_tryout_message(channel.id, message.id, total_delete_delay))
-                        self.bot.get_cog('tryout').message_deletion_tasks[message.id] = task
+                        await self.schedule_message_deletion(channel.id, message.id, lock_time)
 
                         # Send confirmation
                         confirmation_embed = discord.Embed(
@@ -558,6 +569,252 @@ class Tryout(commands.Cog, name="tryout"):
                 color=0xFF0000
             )
             await interaction.followup.send(embed=error_embed, ephemeral=True)
+
+    @app_commands.command(
+        name="data",
+        description="Show tryout statistics for the server."
+    )
+    @app_commands.describe(
+        days="Number of days to show (2-180 days, default 30)",
+        user="Show only tryouts hosted by a specific user"
+    )
+    async def data(
+        self,
+        interaction: discord.Interaction,
+        days: int = 30,
+        user: discord.User = None
+    ) -> None:
+        """Show tryout statistics with a graph."""
+        await interaction.response.defer()
+
+        try:
+            # Validate days parameter
+            if days < 2:
+                days = 2
+            elif days > 180:
+                days = 180
+
+            # Calculate date range
+            end_date = datetime.utcnow()
+            start_date = end_date - timedelta(days=days)
+            start_unix = int(start_date.timestamp())
+            end_unix = int(end_date.timestamp())
+
+            # Build query
+            query = {
+                "guild_id": str(interaction.guild.id),
+                "created_at": {
+                    "$gte": start_date.isoformat(),
+                    "$lte": end_date.isoformat()
+                }
+            }
+            
+            # Add user filter if specified
+            if user:
+                query["host_id"] = str(user.id)
+
+            # Get tryout sessions
+            sessions = await self.db.db["tryout_sessions"].find(query).to_list(None)
+
+            if not sessions:
+                embed = discord.Embed(
+                    title="📊 No Data Available",
+                    description=(
+                        f"No tryouts were hosted between <t:{start_unix}:D> and <t:{end_unix}:D>"
+                        f"{' by ' + user.mention if user else ''}"
+                    ),
+                    color=0x5865F2
+                )
+                await interaction.followup.send(embed=embed)
+                return
+
+            # Process data
+            tryouts_by_date = defaultdict(int)
+            tryouts_by_group = defaultdict(int)
+            total_tryouts = len(sessions)
+            active_hosts = set()
+
+            # Fill in all dates in range with 0
+            current_date = start_date
+            while current_date <= end_date:
+                tryouts_by_date[current_date.date()] = 0
+                current_date += timedelta(days=1)
+
+            # Count tryouts and gather additional stats
+            for session in sessions:
+                date = datetime.fromisoformat(session["created_at"]).date()
+                tryouts_by_date[date] += 1
+                tryouts_by_group[session["group_name"]] += 1
+                active_hosts.add(session["host_id"])
+
+            # Create the graph with improved styling
+            plt.figure(figsize=(12, 6))
+            plt.style.use('dark_background')
+            
+            # Plot data with enhanced visuals
+            dates = list(tryouts_by_date.keys())
+            counts = list(tryouts_by_date.values())
+            
+            # Create gradient fill
+            gradient = plt.fill_between(dates, counts, alpha=0.2, color='#5865F2')
+            line = plt.plot(dates, counts, marker='o', linestyle='-', linewidth=3, 
+                    markersize=8, color='#5865F2', markerfacecolor='white', 
+                    markeredgewidth=2, markeredgecolor='#5865F2', zorder=5)
+            
+            # Add value labels on points with date
+            for x, y in zip(dates, counts):
+                if y > 0:  # Only show label if there were tryouts
+                    date_str = x.strftime('%b %d')  # Format date as "Jan 01"
+                    label = f"{y}\n{date_str}"
+                    plt.annotate(label, 
+                        (x, y),
+                        textcoords="offset points",
+                        xytext=(0, 10),
+                        ha='center',
+                        fontsize=10,
+                        fontweight='bold',
+                        color='white',
+                        bbox=dict(
+                            boxstyle='round,pad=0.5',
+                            fc='#2F3136',
+                            ec='#5865F2',
+                            alpha=0.8
+                        )
+                    )
+            
+            # Enhance grid and styling
+            plt.grid(True, alpha=0.1, linestyle='--', color='gray')
+            title = 'Tryout Activity Overview'
+            if user:
+                title += f' for {user.name}'
+            plt.title(title, pad=20, color='white', fontsize=16, fontweight='bold')
+            
+            # Only show date labels if we have more than 14 days
+            if days > 14:
+                plt.xlabel('Date', color='white', fontsize=12, fontweight='bold', labelpad=10)
+            
+            plt.ylabel('Number of Tryouts', color='white', fontsize=12, fontweight='bold', labelpad=10)
+            
+            # Improve axis styling
+            ax = plt.gca()
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_alpha(0.3)
+            ax.spines['bottom'].set_alpha(0.3)
+            
+            # Format y-axis to show only integers
+            ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
+            
+            # Format dates on x-axis based on time period
+            if days <= 14:
+                # For short periods, hide x-axis labels since we show dates in the bubbles
+                ax.xaxis.set_ticklabels([])
+                ax.xaxis.set_ticks([])
+            else:
+                # For longer periods, show abbreviated dates
+                if days > 90:
+                    date_formatter = plt.matplotlib.dates.DateFormatter('%b %Y')  # "Jan 2024"
+                else:
+                    date_formatter = plt.matplotlib.dates.DateFormatter('%b %d')  # "Jan 01"
+                ax.xaxis.set_major_formatter(date_formatter)
+                plt.xticks(rotation=30, ha='right', fontsize=10)
+            
+            plt.yticks(fontsize=10)
+            
+            # Add subtle background color
+            ax.set_facecolor('#2F3136')
+            
+            # Adjust layout with more space for labels
+            plt.tight_layout()
+            
+            # Save plot with higher quality
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', facecolor='#2F3136', 
+                       bbox_inches='tight', dpi=300, 
+                       edgecolor='none', pad_inches=0.2)
+            buf.seek(0)
+            plt.close()
+
+            # Create embed with enhanced formatting
+            title = "📊 Tryout Statistics Overview"
+            if user:
+                title += f" for {user.name}"
+            
+            embed = discord.Embed(
+                title=title,
+                description=(
+                    f"Showing data from <t:{start_unix}:D> to <t:{end_unix}:D>\n"
+                    f"Time period: `{days} days`"
+                ),
+                color=0x5865F2,
+                timestamp=datetime.utcnow()
+            )
+            
+            # Add statistics with emojis and better formatting
+            daily_average = total_tryouts / days
+            embed.add_field(
+                name="📈 Total Tryouts",
+                value=f"```{total_tryouts:,}```",
+                inline=True
+            )
+            embed.add_field(
+                name="📊 Daily Average",
+                value=f"```{int(daily_average) if daily_average >= 1 else daily_average:.1f}```",
+                inline=True
+            )
+            
+            if not user:
+                embed.add_field(
+                    name="👥 Unique Hosts",
+                    value=f"```{len(active_hosts):,}```",
+                    inline=True
+                )
+
+            # Add top groups with improved formatting
+            if tryouts_by_group:
+                top_groups = sorted(tryouts_by_group.items(), key=lambda x: x[1], reverse=True)[:5]
+                top_groups_text = "\n".join(
+                    f"#{idx + 1} {name}: {count:,} tryout{'s' if count != 1 else ''}"
+                    for idx, (name, count) in enumerate(top_groups)
+                )
+                embed.add_field(
+                    name="🏆 Most Active Groups",
+                    value=f"```{top_groups_text}```",
+                    inline=False
+                )
+
+            # Add activity summary
+            peak_day = max(tryouts_by_date.items(), key=lambda x: x[1])
+            peak_unix = int(datetime.combine(peak_day[0], datetime.min.time()).timestamp())
+            embed.add_field(
+                name="📅 Peak Activity",
+                value=f"{peak_day[1]} tryout{'s' if peak_day[1] != 1 else ''} on <t:{peak_unix}:D>",
+                inline=False
+            )
+
+            # Add footer with additional info
+            footer_text = "Use /data [days] to change the time range (2-180 days)"
+            if not user:
+                footer_text += " • Add user parameter to see specific host stats"
+            embed.set_footer(text=footer_text)
+            
+            # Send the embed with the graph
+            file = discord.File(buf, filename="tryout_stats.png")
+            embed.set_image(url="attachment://tryout_stats.png")
+            
+            await interaction.followup.send(embed=embed, file=file)
+
+        except Exception as e:
+            self.logger.error(f"Error generating tryout statistics: {e}", exc_info=True)
+            error_embed = discord.Embed(
+                title="❌ Error",
+                description=(
+                    "An error occurred while generating the statistics.\n"
+                    f"```{str(e)}```"
+                ),
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=error_embed)
 
 
 async def setup(bot) -> None:

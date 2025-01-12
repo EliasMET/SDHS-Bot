@@ -1358,11 +1358,12 @@ class Moderation(commands.Cog, name="moderation"):
         try:
             doc = await self.db.get_case(interaction.guild.id, case_id)
             if not doc:
-                raise ModCommandError(
-                    f"No case found with ID {case_id}",
-                    error_type="Case Not Found",
-                    context={"case_id": case_id}
+                embed = discord.Embed(
+                    description="❌ No case found",
+                    color=discord.Color.red()
                 )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
 
             user_id = doc["user_id"]
             mod_id = doc["moderator_id"]
