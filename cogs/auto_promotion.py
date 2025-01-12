@@ -205,27 +205,45 @@ class AutoPromotion(commands.Cog, name="AutoPromotion"):
         }
         payload = {"id": str(roblox_id)}
 
-        try:
-            async with session.post(self.promote_api_url, headers=headers, json=payload) as resp:
-                try:
-                    data = await resp.json()
-                    response_msg = data.get("msg") or data.get("error") or ""
-                except aiohttp.ContentTypeError:
-                    response_msg = await resp.text()
+        # Make two promotion attempts
+        for attempt in range(2):
+            try:
+                async with session.post(self.promote_api_url, headers=headers, json=payload) as resp:
+                    try:
+                        data = await resp.json()
+                        response_msg = data.get("msg") or data.get("error") or ""
+                    except aiohttp.ContentTypeError:
+                        response_msg = await resp.text()
 
-                if resp.status == 200:
-                    self.bot.logger.info(f"Successfully promoted Roblox ID {roblox_id}.")
+                    if resp.status != 200:
+                        fail_reason = response_msg.strip() or f"HTTP {resp.status}"
+                        self.bot.logger.warning(f"Promotion attempt {attempt + 1} failed for Roblox ID {roblox_id}: {fail_reason}")
+                        if attempt == 0:  # If this is the first attempt, try again
+                            await asyncio.sleep(1)  # Add a small delay between attempts
+                            continue
+                        return False, fail_reason
+                    
+                    self.bot.logger.info(f"Successfully completed promotion attempt {attempt + 1} for Roblox ID {roblox_id}.")
+                    if attempt == 0:  # If this is the first successful attempt, continue to second attempt
+                        await asyncio.sleep(1)  # Add a small delay between attempts
+                        continue
                     return True, "Promoted"
-                else:
-                    fail_reason = response_msg.strip() or f"HTTP {resp.status}"
-                    self.bot.logger.warning(f"Promotion failed for Roblox ID {roblox_id}: {fail_reason}")
-                    return False, fail_reason
-        except aiohttp.ClientError as e:
-            self.bot.logger.error(f"HTTP request error while promoting Roblox ID {roblox_id}: {e}")
-            return False, "Request Exception"
-        except Exception as e:
-            self.bot.logger.error(f"Unexpected error while promoting Roblox ID {roblox_id}: {e}")
-            return False, "Unexpected Error"
+
+            except aiohttp.ClientError as e:
+                self.bot.logger.error(f"HTTP request error while promoting Roblox ID {roblox_id} (attempt {attempt + 1}): {e}")
+                if attempt == 0:  # If this is the first attempt, try again
+                    await asyncio.sleep(1)
+                    continue
+                return False, "Request Exception"
+            except Exception as e:
+                self.bot.logger.error(f"Unexpected error while promoting Roblox ID {roblox_id} (attempt {attempt + 1}): {e}")
+                if attempt == 0:  # If this is the first attempt, try again
+                    await asyncio.sleep(1)
+                    continue
+                return False, "Unexpected Error"
+        
+        # This line should only be reached if both attempts were successful
+        return True, "Promoted"
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AutoPromotion(bot))
