@@ -19,7 +19,6 @@ class AutoPromotion(commands.Cog, name="AutoPromotion"):
         self.bot = bot
         self.db = None
         self.promote_api_url = os.getenv("PROMOTE_API_URL", "http://37.60.250.231:3002/promote")
-        self.promote_api_token = os.getenv("PROMOTE_API_TOKEN")
         self.api_key = os.getenv("API_KEY")
         self.roblox_user_lookup_endpoint = "https://users.roblox.com/v1/usernames/users"
 
@@ -130,28 +129,24 @@ class AutoPromotion(commands.Cog, name="AutoPromotion"):
 
         results = []
 
-        if not self.promote_api_token:
-            self.bot.logger.warning("Promote API token not configured. Promotions cannot proceed.")
-            results = [(uname, False, "No API token configured") for uname in passed_usernames]
-        else:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    roblox_ids_map = await self.fetch_roblox_ids_bulk(session, passed_usernames)
-                    self.bot.logger.debug(f"Roblox IDs fetched: {roblox_ids_map}")
+        try:
+            async with aiohttp.ClientSession() as session:
+                roblox_ids_map = await self.fetch_roblox_ids_bulk(session, passed_usernames)
+                self.bot.logger.debug(f"Roblox IDs fetched: {roblox_ids_map}")
 
-                    for uname in passed_usernames:
-                        roblox_id = roblox_ids_map.get(uname.lower())
-                        if roblox_id is None:
-                            self.bot.logger.warning(f"Roblox ID not found for username: {uname}")
-                            results.append((uname, False, "Roblox user not found"))
-                            continue
+                for uname in passed_usernames:
+                    roblox_id = roblox_ids_map.get(uname.lower())
+                    if roblox_id is None:
+                        self.bot.logger.warning(f"Roblox ID not found for username: {uname}")
+                        results.append((uname, False, "Roblox user not found"))
+                        continue
 
-                        success, msg = await self.promote_user(session, roblox_id)
-                        results.append((uname, success, msg))
-            except Exception as e:
-                self.bot.logger.error(f"Unexpected error during promotion: {e}")
-                if not results:
-                    results = [(uname, False, "Unexpected error during promotion") for uname in passed_usernames]
+                    success, msg = await self.promote_user(session, roblox_id)
+                    results.append((uname, success, msg))
+        except Exception as e:
+            self.bot.logger.error(f"Unexpected error during promotion: {e}")
+            if not results:
+                results = [(uname, False, "Unexpected error during promotion") for uname in passed_usernames]
 
         success_count = sum(1 for r in results if r[1])
         fail_count = len(results) - success_count
