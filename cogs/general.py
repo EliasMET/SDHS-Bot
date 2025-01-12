@@ -520,9 +520,14 @@ class General(commands.Cog, name="general"):
                         # Add guild information if available
                         if "server_id" in doc or "guild_id" in doc:
                             guild_id = doc.get("server_id") or doc.get("guild_id")
-                            guild = self.bot.get_guild(int(guild_id)) if isinstance(guild_id, (str, int)) else None
-                            if guild:
-                                doc["guild_name"] = guild.name
+                            if guild_id is not None:  # Check if guild_id exists
+                                try:
+                                    guild = self.bot.get_guild(int(guild_id)) if isinstance(guild_id, (str, int)) else None
+                                    if guild:
+                                        doc["guild_name"] = guild.name
+                                except (ValueError, TypeError):
+                                    # If conversion fails, skip adding guild name
+                                    pass
                         
                         # Redact private information, moderator IDs, and reasons if not owner
                         if not is_owner and doc.get("moderator_id") != str(interaction.user.id):
